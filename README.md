@@ -98,20 +98,38 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Server | Node.js, Fastify |
-| SQL Database | PostgreSQL with Row-Level Security (Prisma) |
-| Event Log | Apache Kafka (KRaft — no ZooKeeper) |
-| Search | Elasticsearch 8 |
-| Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) |
-| Cache / Rate Limits | Redis (ioredis) |
-| Auth | API key — SHA-256 hash lookup; no JWT |
-| Logging | Pino → Seq |
-| Docs | Swagger UI (`@fastify/swagger`) |
-| Testing | Vitest |
+| Layer | Technology | Phase |
+|---|---|---|
+| SQL Database | PostgreSQL with Row-Level Security (Prisma) | 1 — installed |
+| Server | Node.js, Fastify | 2 |
+| Auth | API key — SHA-256 hash lookup; no JWT | 2 |
+| Logging | Pino → Seq | 2 |
+| Docs | Swagger UI (`@fastify/swagger`) | 2 |
+| Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 |
+| Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 |
+| Cache / Rate Limits | Redis (ioredis) | 14 |
+| Search | Elasticsearch 8 | 10 |
+| Testing | Vitest | 11+ |
 
 ## Project Structure
+
+**Current files (Phase 1):**
+
+```
+prisma/
+├── migrations/                       # Database migration history
+└── schema.prisma                     # All 7 Prisma models with RLS-compatible field mapping
+prisma.config.ts                      # Prisma 7.x datasource config — DATABASE_URL lives here, not in schema.prisma
+src/
+├── db/
+│   └── prisma.js                     # Prisma client singleton (PrismaPg adapter)
+└── seed/
+    └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
+generated/
+└── prisma/                           # Generated Prisma client (output of `npm run db:generate`)
+```
+
+**Planned layout (all phases):**
 
 ```
 src/
@@ -168,7 +186,7 @@ src/
 ├── errors/
 │   └── AppError.js                   # Custom error classes (Validation, NotFound, Forbidden, …)
 └── seed/
-    └── seed.js                       # Dev seed: two tenants, topics, subscriptions, events
+    └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 prisma/
 └── schema.prisma                     # All models + RLS-compatible field mapping
 prisma.config.ts                      # Prisma 7.x config — datasource.url reads DATABASE_URL here (not in schema.prisma)
@@ -234,8 +252,11 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
+**Phase 1 (current):**
 - Node.js 18+
 - PostgreSQL 14+
+
+**Full system (all phases):**
 - Apache Kafka 3.7+ (KRaft mode — no ZooKeeper required)
 - Elasticsearch 8+
 - Redis 7+
@@ -291,23 +312,23 @@ Seeds two tenants, three topics each, two subscriptions per topic, and fifty eve
 
 ### Run
 
+> **Phase 2 required.** `npm run dev` and `npm start` both reference `src/index.js` which does not exist yet. The server entrypoint is created in Phase 2 (Fastify setup).
+
 ```bash
-# Development (auto-reload)
+# Development (auto-reload) — available after Phase 2
 npm run dev
 
-# Production
+# Production — available after Phase 2
 npm start
 ```
 
-API docs available at `http://localhost:3096/swagger` (development only).
+API docs will be available at `http://localhost:3096/swagger` (development only, Phase 2+).
 
 ### Test
 
-```bash
-npm test
-```
+> **Not yet implemented.** `npm test` currently exits with an error. Tests are planned for Phase 11+.
 
-Unit tests cover HMAC signing, idempotency key logic, and retry schedule computation. Integration tests verify RLS isolation (a query scoped to tenant A must return zero rows owned by tenant B) and the outbox worker atomicity guarantee.
+Unit tests will cover HMAC signing, idempotency key logic, and retry schedule computation. Integration tests will verify RLS isolation (a query scoped to tenant A must return zero rows owned by tenant B) and the outbox worker atomicity guarantee.
 
 ---
 
@@ -623,7 +644,7 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 
 | Phase | Feature |
 |---|---|
-| 1 | PostgreSQL schema — Prisma models for all 7 entities with RLS-compatible field mapping, partial indexes, compound unique constraints, and cascade delete semantics; Prisma 7.x config with `prisma.config.ts` (datasource URL lives here, not in `schema.prisma`); generator set to `prisma-client` with output to `generated/prisma/` |
+| 1 | PostgreSQL schema — Prisma models for all 7 entities (`Tenant`, `ApiKey`, `Topic`, `Subscription`, `Event`, `DeliveryAttempt`, `DeadLetter`) with RLS-compatible field mapping, partial indexes, compound unique constraints, and cascade delete semantics; Prisma 7.x config in `prisma.config.ts` (datasource URL lives here, not in `schema.prisma`); generator output to `generated/prisma/`; `src/db/prisma.js` Prisma client singleton using `PrismaPg` driver adapter; `src/seed/seed.ts` dev seed (2 tenants, 3 topics each, 2 subscriptions per topic, 50 events per tenant) |
 
 ## Roadmap
 
