@@ -1,0 +1,129 @@
+generator client {
+    provider = "prisma-client"
+    output   = "../generated/prisma"
+}
+
+datasource db {
+    provider = "postgresql"
+}
+
+model Tenant {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    name String @db.VarChar(200)
+    email String @unique @db.VarChar(320)
+    maxSubscriptions Int @default(100) @map("max_subscriptions")
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    apiKeys ApiKey[]
+    topics Topic[]
+    subscriptions Subscription[]
+    events Event[]
+    deliveryAttempts DeliveryAttempt[]
+    deadLetters DeadLetter[]
+
+    @@map("tenants")
+}
+
+model ApiKey {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    keyHash String @unique @db.VarChar(64) @map("key_hash")    
+    keyPrefix String @db.VarChar(15) @map("key_prefix")
+    label String @default("Default") @db.VarChar(100)
+    lastUsedAt DateTime? @map("last_used_at") @db.Timestamptz
+    revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+    @@map("api_keys")
+}
+
+model Topic {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    name String @db.VarChar(200)
+    description String? @db.Text
+    deletedAt DateTime? @map("deleted_at") @db.Timestamptz
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+    subscriptions Subscription[]
+    events Event[]
+
+    @@unique([tenantId, name])
+    @@map("topics")
+}
+
+model Subscription {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    topicId String @map("topic_id") @db.Uuid
+    endpointUrl String @map("endpoint_url") @db.Text
+    secretHash String @db.VarChar(64) @map("secret_hash")
+    secretPrefix String @db.VarChar(10) @map("secret_prefix")
+    enabled Boolean @default(true)
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+    topic Topic @relation(fields: [topicId], references: [id], onDelete: Cascade)
+    deliveryAttempts DeliveryAttempt[]
+    deadLetters DeadLetter[]
+
+    @@map("subscriptions")
+}
+
+model Event {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    topicId String @map("topic_id") @db.Uuid
+    eventType String @db.VarChar(200) @map("event_type")
+    payload Json
+    idempotencyKey String? @db.VarChar(200) @map("idempotency_key")
+    publishedToKafka Boolean @default(false) @map("published_to_kafka")
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    tenant Tenant @relation(fields: [tenantId], references: [id])
+    topic Topic @relation(fields: [topicId], references: [id])
+    deliveryAttempts DeliveryAttempt[]
+    deadLetters DeadLetter[]
+
+    @@map("events")
+}
+
+model DeliveryAttempt {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    eventId String @map("event_id") @db.Uuid
+    subscriptionId String @map("subscription_id") @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    attemptNumber Int @default(1) @map("attempt_number") @db.SmallInt
+    status String @default("pending") @db.VarChar(20)
+    httpStatus Int? @map("http_status") @db.SmallInt
+    responseBody String? @map("response_body") @db.Text
+    durationMs Int? @map("duration_ms")
+    nextRetryAt DateTime? @map("next_retry_at") @db.Timestamptz
+    attemptedAt DateTime @default(now()) @map("attempted_at") @db.Timestamptz
+
+    event Event @relation(fields: [eventId], references: [id])
+    tenant Tenant @relation(fields: [tenantId], references: [id])
+    subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+    @@map("delivery_attempts")
+}
+
+model DeadLetter {
+    id String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+    eventId String @map("event_id") @db.Uuid
+    subscriptionId String @map("subscription_id") @db.Uuid
+    tenantId String @map("tenant_id") @db.Uuid
+    totalAttempts Int @map("total_attempts") @db.SmallInt
+    lastError String? @map("last_error") @db.Text
+    resolvedAt DateTime? @map("resolved_at") @db.Timestamptz
+    createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+    event Event @relation(fields: [eventId], references: [id])
+    subscription Subscription @relation(fields: [subscriptionId], references: [id])
+    tenant Tenant @relation(fields: [tenantId], references: [id])
+
+    @@map("dead_letters")
+}
