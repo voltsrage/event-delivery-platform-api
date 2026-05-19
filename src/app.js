@@ -4,6 +4,8 @@ import { fastifyLoggerOptions } from './utils/logger.js';
 import { AppError, TooManyRequestsError } from './errors/AppError.js';
 import { ApiResponse } from './utils/ApiResponse.js';
 import crypto from 'crypto';
+import {tenantRoutes} from './routes/tenants.js';
+import { apiKeyRoutes } from './routes/apiKeys.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -78,8 +80,9 @@ export async function buildApp()
     app.get('/health', async () => ({ status: 'ok' }));
 
     // Routes are registered here in later phases:
-    // app.post('/api/v1/tenants', tenantRegistrationHandler);
-    // await app.register(authenticatedRoutes, { prefix: '/api/v1' });
+    await app.register(tenantRoutes, {prefix: '/api/v1/tenants'});
 
+    await app.register(apiKeyRoutes, {prefix: '/api/v1/api-keys'});
+    
     return app;
 }

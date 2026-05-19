@@ -101,19 +101,19 @@ Load active subscriptions for (tenant_id, topic_id)
 | Layer | Technology | Phase |
 |---|---|---|
 | SQL Database | PostgreSQL with Row-Level Security (Prisma) | 1 — installed |
-| Server | Node.js, Fastify | 2 |
-| Auth | API key — SHA-256 hash lookup; no JWT | 2 |
-| Logging | Pino → Seq | 2 |
-| Docs | Swagger UI (`@fastify/swagger`) | 2 |
+| Server | Node.js, Fastify | 2 — installed |
+| Auth | API key — SHA-256 hash lookup; no JWT | 2 — installed |
+| Logging | Pino (pino-pretty in dev) | 2 — installed |
+| Docs | Swagger UI (`@fastify/swagger`) | 2 — installed |
+| Testing | Vitest integration tests | 3 — installed |
 | Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 |
 | Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 |
 | Cache / Rate Limits | Redis (ioredis) | 14 |
 | Search | Elasticsearch 8 | 10 |
-| Testing | Vitest | 11+ |
 
 ## Project Structure
 
-**Current files (Phase 1):**
+**Current files (Phases 1–3):**
 
 ```
 prisma/
@@ -121,8 +121,32 @@ prisma/
 └── schema.prisma                     # All 7 Prisma models with RLS-compatible field mapping
 prisma.config.ts                      # Prisma 7.x datasource config — DATABASE_URL lives here, not in schema.prisma
 src/
+├── index.js                          # Server entry point — Fastify startup, PORT from env
+├── app.js                            # Fastify plugin chain: swagger, error handler, routes
 ├── db/
 │   └── prisma.js                     # Prisma client singleton (PrismaPg adapter)
+├── hooks/
+│   └── authenticate.js               # API key auth: SHA-256 hash lookup → req.tenantId + req.withTenant
+├── routes/
+│   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
+│   └── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
+├── controllers/
+│   ├── tenantController.js
+│   └── apiController.js
+├── services/
+│   ├── tenantService.js              # Tenant creation + initial API key in one transaction
+│   └── apiKeyService.js              # Additional key creation, list, revocation
+├── utils/
+│   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
+│   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
+│   ├── withTenant.js                 # SET LOCAL app.current_tenant_id per-transaction
+│   └── logger.js                     # Pino options (pino-pretty in dev, JSON in prod)
+├── errors/
+│   └── AppError.js                   # AppError + NotFoundError, ValidationError, ConflictError,
+│                                     #   UnauthorizedError, ForbiddenError, TooManyRequestsError
+├── test/
+│   ├── tenants.test.js               # Integration tests: POST /tenants, GET/POST/DELETE /api-keys
+│   └── rls-isolation.test.js         # RLS isolation: tenant A queries return zero rows for tenant B
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -252,7 +276,7 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phase 1 (current):**
+**Phases 1–3 (current):**
 - Node.js 18+
 - PostgreSQL 14+
 
@@ -312,23 +336,27 @@ Seeds two tenants, three topics each, two subscriptions per topic, and fifty eve
 
 ### Run
 
-> **Phase 2 required.** `npm run dev` and `npm start` both reference `src/index.js` which does not exist yet. The server entrypoint is created in Phase 2 (Fastify setup).
-
 ```bash
-# Development (auto-reload) — available after Phase 2
+# Development (auto-reload via nodemon)
 npm run dev
 
-# Production — available after Phase 2
+# Production
 npm start
 ```
 
-API docs will be available at `http://localhost:3096/swagger` (development only, Phase 2+).
+API docs available at `http://localhost:3096/swagger` (development only).
 
 ### Test
 
-> **Not yet implemented.** `npm test` currently exits with an error. Tests are planned for Phase 11+.
+```bash
+# Run all tests once
+npm test
 
-Unit tests will cover HMAC signing, idempotency key logic, and retry schedule computation. Integration tests will verify RLS isolation (a query scoped to tenant A must return zero rows owned by tenant B) and the outbox worker atomicity guarantee.
+# Watch mode
+npm run test:watch
+```
+
+Integration tests cover tenant registration, API key CRUD (create, list, revoke), authentication edge cases (missing header, invalid key, revoked key), and RLS isolation (a query with no `WHERE tenant_id` clause must return zero rows belonging to another tenant). The RLS isolation suite requires the seed data (`npm run seed`) to be present before running.
 
 ---
 
@@ -645,13 +673,13 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | Phase | Feature |
 |---|---|
 | 1 | PostgreSQL schema — Prisma models for all 7 entities (`Tenant`, `ApiKey`, `Topic`, `Subscription`, `Event`, `DeliveryAttempt`, `DeadLetter`) with RLS-compatible field mapping, partial indexes, compound unique constraints, and cascade delete semantics; Prisma 7.x config in `prisma.config.ts` (datasource URL lives here, not in `schema.prisma`); generator output to `generated/prisma/`; `src/db/prisma.js` Prisma client singleton using `PrismaPg` driver adapter; `src/seed/seed.ts` dev seed (2 tenants, 3 topics each, 2 subscriptions per topic, 50 events per tenant) |
+| 2 | Fastify server (`src/index.js` + `src/app.js`) with Swagger UI, global error handler, 404 handler, `GET /health` liveness check; `authenticate` hook (SHA-256 hash lookup, async `last_used_at` update, `req.withTenant` bound to transaction); `withTenant` utility (`SET LOCAL app.current_tenant_id` scoped to transaction); Pino logger (pino-pretty in dev, JSON in prod); `ApiResponse` envelope; `AppError` hierarchy |
+| 3 | Tenant registration (`POST /api/v1/tenants` — unauthenticated, returns raw key once); API key management (`POST /GET /DELETE /api/v1/api-keys` — authenticated); Vitest integration tests for all three endpoints including cross-tenant isolation and revocation; RLS isolation test suite (`rls-isolation.test.js`) |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 2 | Fastify setup + API key auth middleware + tenant context injection (`SET LOCAL`) |
-| 3 | Tenant registration + API key management (create, list, revoke) |
 | 4 | Topic management (CRUD + soft delete) |
 | 5 | Subscription management (CRUD + per-subscription signing secret + rotate-secret) |
 | 6 | Event publishing + outbox pattern + idempotency |
