@@ -120,6 +120,7 @@ export const SubscriptionScalarFieldEnum = {
   endpointUrl: 'endpointUrl',
   secretHash: 'secretHash',
   secretPrefix: 'secretPrefix',
+  secretRaw: 'secretRaw',
   enabled: 'enabled',
   createdAt: 'createdAt'
 } as const

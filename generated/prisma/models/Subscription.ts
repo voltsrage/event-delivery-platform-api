@@ -31,6 +31,7 @@ export type SubscriptionMinAggregateOutputType = {
   endpointUrl: string | null
   secretHash: string | null
   secretPrefix: string | null
+  secretRaw: string | null
   enabled: boolean | null
   createdAt: Date | null
 }
@@ -42,6 +43,7 @@ export type SubscriptionMaxAggregateOutputType = {
   endpointUrl: string | null
   secretHash: string | null
   secretPrefix: string | null
+  secretRaw: string | null
   enabled: boolean | null
   createdAt: Date | null
 }
@@ -53,6 +55,7 @@ export type SubscriptionCountAggregateOutputType = {
   endpointUrl: number
   secretHash: number
   secretPrefix: number
+  secretRaw: number
   enabled: number
   createdAt: number
   _all: number
@@ -66,6 +69,7 @@ export type SubscriptionMinAggregateInputType = {
   endpointUrl?: true
   secretHash?: true
   secretPrefix?: true
+  secretRaw?: true
   enabled?: true
   createdAt?: true
 }
@@ -77,6 +81,7 @@ export type SubscriptionMaxAggregateInputType = {
   endpointUrl?: true
   secretHash?: true
   secretPrefix?: true
+  secretRaw?: true
   enabled?: true
   createdAt?: true
 }
@@ -88,6 +93,7 @@ export type SubscriptionCountAggregateInputType = {
   endpointUrl?: true
   secretHash?: true
   secretPrefix?: true
+  secretRaw?: true
   enabled?: true
   createdAt?: true
   _all?: true
@@ -172,6 +178,7 @@ export type SubscriptionGroupByOutputType = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled: boolean
   createdAt: Date
   _count: SubscriptionCountAggregateOutputType | null
@@ -204,6 +211,7 @@ export type SubscriptionWhereInput = {
   endpointUrl?: Prisma.StringFilter<"Subscription"> | string
   secretHash?: Prisma.StringFilter<"Subscription"> | string
   secretPrefix?: Prisma.StringFilter<"Subscription"> | string
+  secretRaw?: Prisma.StringFilter<"Subscription"> | string
   enabled?: Prisma.BoolFilter<"Subscription"> | boolean
   createdAt?: Prisma.DateTimeFilter<"Subscription"> | Date | string
   tenant?: Prisma.XOR<Prisma.TenantScalarRelationFilter, Prisma.TenantWhereInput>
@@ -219,6 +227,7 @@ export type SubscriptionOrderByWithRelationInput = {
   endpointUrl?: Prisma.SortOrder
   secretHash?: Prisma.SortOrder
   secretPrefix?: Prisma.SortOrder
+  secretRaw?: Prisma.SortOrder
   enabled?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   tenant?: Prisma.TenantOrderByWithRelationInput
@@ -237,6 +246,7 @@ export type SubscriptionWhereUniqueInput = Prisma.AtLeast<{
   endpointUrl?: Prisma.StringFilter<"Subscription"> | string
   secretHash?: Prisma.StringFilter<"Subscription"> | string
   secretPrefix?: Prisma.StringFilter<"Subscription"> | string
+  secretRaw?: Prisma.StringFilter<"Subscription"> | string
   enabled?: Prisma.BoolFilter<"Subscription"> | boolean
   createdAt?: Prisma.DateTimeFilter<"Subscription"> | Date | string
   tenant?: Prisma.XOR<Prisma.TenantScalarRelationFilter, Prisma.TenantWhereInput>
@@ -252,6 +262,7 @@ export type SubscriptionOrderByWithAggregationInput = {
   endpointUrl?: Prisma.SortOrder
   secretHash?: Prisma.SortOrder
   secretPrefix?: Prisma.SortOrder
+  secretRaw?: Prisma.SortOrder
   enabled?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
   _count?: Prisma.SubscriptionCountOrderByAggregateInput
@@ -269,6 +280,7 @@ export type SubscriptionScalarWhereWithAggregatesInput = {
   endpointUrl?: Prisma.StringWithAggregatesFilter<"Subscription"> | string
   secretHash?: Prisma.StringWithAggregatesFilter<"Subscription"> | string
   secretPrefix?: Prisma.StringWithAggregatesFilter<"Subscription"> | string
+  secretRaw?: Prisma.StringWithAggregatesFilter<"Subscription"> | string
   enabled?: Prisma.BoolWithAggregatesFilter<"Subscription"> | boolean
   createdAt?: Prisma.DateTimeWithAggregatesFilter<"Subscription"> | Date | string
 }
@@ -278,6 +290,7 @@ export type SubscriptionCreateInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   tenant: Prisma.TenantCreateNestedOneWithoutSubscriptionsInput
@@ -293,6 +306,7 @@ export type SubscriptionUncheckedCreateInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedCreateNestedManyWithoutSubscriptionInput
@@ -304,6 +318,7 @@ export type SubscriptionUpdateInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   tenant?: Prisma.TenantUpdateOneRequiredWithoutSubscriptionsNestedInput
@@ -319,6 +334,7 @@ export type SubscriptionUncheckedUpdateInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedUpdateManyWithoutSubscriptionNestedInput
@@ -332,6 +348,7 @@ export type SubscriptionCreateManyInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
 }
@@ -341,6 +358,7 @@ export type SubscriptionUpdateManyMutationInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -352,6 +370,7 @@ export type SubscriptionUncheckedUpdateManyInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -373,6 +392,7 @@ export type SubscriptionCountOrderByAggregateInput = {
   endpointUrl?: Prisma.SortOrder
   secretHash?: Prisma.SortOrder
   secretPrefix?: Prisma.SortOrder
+  secretRaw?: Prisma.SortOrder
   enabled?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
@@ -384,6 +404,7 @@ export type SubscriptionMaxOrderByAggregateInput = {
   endpointUrl?: Prisma.SortOrder
   secretHash?: Prisma.SortOrder
   secretPrefix?: Prisma.SortOrder
+  secretRaw?: Prisma.SortOrder
   enabled?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
@@ -395,6 +416,7 @@ export type SubscriptionMinOrderByAggregateInput = {
   endpointUrl?: Prisma.SortOrder
   secretHash?: Prisma.SortOrder
   secretPrefix?: Prisma.SortOrder
+  secretRaw?: Prisma.SortOrder
   enabled?: Prisma.SortOrder
   createdAt?: Prisma.SortOrder
 }
@@ -525,6 +547,7 @@ export type SubscriptionCreateWithoutTenantInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   topic: Prisma.TopicCreateNestedOneWithoutSubscriptionsInput
@@ -538,6 +561,7 @@ export type SubscriptionUncheckedCreateWithoutTenantInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedCreateNestedManyWithoutSubscriptionInput
@@ -580,6 +604,7 @@ export type SubscriptionScalarWhereInput = {
   endpointUrl?: Prisma.StringFilter<"Subscription"> | string
   secretHash?: Prisma.StringFilter<"Subscription"> | string
   secretPrefix?: Prisma.StringFilter<"Subscription"> | string
+  secretRaw?: Prisma.StringFilter<"Subscription"> | string
   enabled?: Prisma.BoolFilter<"Subscription"> | boolean
   createdAt?: Prisma.DateTimeFilter<"Subscription"> | Date | string
 }
@@ -589,6 +614,7 @@ export type SubscriptionCreateWithoutTopicInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   tenant: Prisma.TenantCreateNestedOneWithoutSubscriptionsInput
@@ -602,6 +628,7 @@ export type SubscriptionUncheckedCreateWithoutTopicInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedCreateNestedManyWithoutSubscriptionInput
@@ -639,6 +666,7 @@ export type SubscriptionCreateWithoutDeliveryAttemptsInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   tenant: Prisma.TenantCreateNestedOneWithoutSubscriptionsInput
@@ -653,6 +681,7 @@ export type SubscriptionUncheckedCreateWithoutDeliveryAttemptsInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   deadLetters?: Prisma.DeadLetterUncheckedCreateNestedManyWithoutSubscriptionInput
@@ -679,6 +708,7 @@ export type SubscriptionUpdateWithoutDeliveryAttemptsInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   tenant?: Prisma.TenantUpdateOneRequiredWithoutSubscriptionsNestedInput
@@ -693,6 +723,7 @@ export type SubscriptionUncheckedUpdateWithoutDeliveryAttemptsInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   deadLetters?: Prisma.DeadLetterUncheckedUpdateManyWithoutSubscriptionNestedInput
@@ -703,6 +734,7 @@ export type SubscriptionCreateWithoutDeadLettersInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   tenant: Prisma.TenantCreateNestedOneWithoutSubscriptionsInput
@@ -717,6 +749,7 @@ export type SubscriptionUncheckedCreateWithoutDeadLettersInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedCreateNestedManyWithoutSubscriptionInput
@@ -743,6 +776,7 @@ export type SubscriptionUpdateWithoutDeadLettersInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   tenant?: Prisma.TenantUpdateOneRequiredWithoutSubscriptionsNestedInput
@@ -757,6 +791,7 @@ export type SubscriptionUncheckedUpdateWithoutDeadLettersInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedUpdateManyWithoutSubscriptionNestedInput
@@ -768,6 +803,7 @@ export type SubscriptionCreateManyTenantInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
 }
@@ -777,6 +813,7 @@ export type SubscriptionUpdateWithoutTenantInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   topic?: Prisma.TopicUpdateOneRequiredWithoutSubscriptionsNestedInput
@@ -790,6 +827,7 @@ export type SubscriptionUncheckedUpdateWithoutTenantInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedUpdateManyWithoutSubscriptionNestedInput
@@ -802,6 +840,7 @@ export type SubscriptionUncheckedUpdateManyWithoutTenantInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -812,6 +851,7 @@ export type SubscriptionCreateManyTopicInput = {
   endpointUrl: string
   secretHash: string
   secretPrefix: string
+  secretRaw: string
   enabled?: boolean
   createdAt?: Date | string
 }
@@ -821,6 +861,7 @@ export type SubscriptionUpdateWithoutTopicInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   tenant?: Prisma.TenantUpdateOneRequiredWithoutSubscriptionsNestedInput
@@ -834,6 +875,7 @@ export type SubscriptionUncheckedUpdateWithoutTopicInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
   deliveryAttempts?: Prisma.DeliveryAttemptUncheckedUpdateManyWithoutSubscriptionNestedInput
@@ -846,6 +888,7 @@ export type SubscriptionUncheckedUpdateManyWithoutTopicInput = {
   endpointUrl?: Prisma.StringFieldUpdateOperationsInput | string
   secretHash?: Prisma.StringFieldUpdateOperationsInput | string
   secretPrefix?: Prisma.StringFieldUpdateOperationsInput | string
+  secretRaw?: Prisma.StringFieldUpdateOperationsInput | string
   enabled?: Prisma.BoolFieldUpdateOperationsInput | boolean
   createdAt?: Prisma.DateTimeFieldUpdateOperationsInput | Date | string
 }
@@ -897,6 +940,7 @@ export type SubscriptionSelect<ExtArgs extends runtime.Types.Extensions.Internal
   endpointUrl?: boolean
   secretHash?: boolean
   secretPrefix?: boolean
+  secretRaw?: boolean
   enabled?: boolean
   createdAt?: boolean
   tenant?: boolean | Prisma.TenantDefaultArgs<ExtArgs>
@@ -913,6 +957,7 @@ export type SubscriptionSelectCreateManyAndReturn<ExtArgs extends runtime.Types.
   endpointUrl?: boolean
   secretHash?: boolean
   secretPrefix?: boolean
+  secretRaw?: boolean
   enabled?: boolean
   createdAt?: boolean
   tenant?: boolean | Prisma.TenantDefaultArgs<ExtArgs>
@@ -926,6 +971,7 @@ export type SubscriptionSelectUpdateManyAndReturn<ExtArgs extends runtime.Types.
   endpointUrl?: boolean
   secretHash?: boolean
   secretPrefix?: boolean
+  secretRaw?: boolean
   enabled?: boolean
   createdAt?: boolean
   tenant?: boolean | Prisma.TenantDefaultArgs<ExtArgs>
@@ -939,11 +985,12 @@ export type SubscriptionSelectScalar = {
   endpointUrl?: boolean
   secretHash?: boolean
   secretPrefix?: boolean
+  secretRaw?: boolean
   enabled?: boolean
   createdAt?: boolean
 }
 
-export type SubscriptionOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "tenantId" | "topicId" | "endpointUrl" | "secretHash" | "secretPrefix" | "enabled" | "createdAt", ExtArgs["result"]["subscription"]>
+export type SubscriptionOmit<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = runtime.Types.Extensions.GetOmit<"id" | "tenantId" | "topicId" | "endpointUrl" | "secretHash" | "secretPrefix" | "secretRaw" | "enabled" | "createdAt", ExtArgs["result"]["subscription"]>
 export type SubscriptionInclude<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = {
   tenant?: boolean | Prisma.TenantDefaultArgs<ExtArgs>
   topic?: boolean | Prisma.TopicDefaultArgs<ExtArgs>
@@ -975,6 +1022,7 @@ export type $SubscriptionPayload<ExtArgs extends runtime.Types.Extensions.Intern
     endpointUrl: string
     secretHash: string
     secretPrefix: string
+    secretRaw: string
     enabled: boolean
     createdAt: Date
   }, ExtArgs["result"]["subscription"]>
@@ -1410,6 +1458,7 @@ export interface SubscriptionFieldRefs {
   readonly endpointUrl: Prisma.FieldRef<"Subscription", 'String'>
   readonly secretHash: Prisma.FieldRef<"Subscription", 'String'>
   readonly secretPrefix: Prisma.FieldRef<"Subscription", 'String'>
+  readonly secretRaw: Prisma.FieldRef<"Subscription", 'String'>
   readonly enabled: Prisma.FieldRef<"Subscription", 'Boolean'>
   readonly createdAt: Prisma.FieldRef<"Subscription", 'DateTime'>
 }

@@ -62,6 +62,7 @@ model Subscription {
     endpointUrl String @map("endpoint_url") @db.Text
     secretHash String @db.VarChar(64) @map("secret_hash")
     secretPrefix String @db.VarChar(10) @map("secret_prefix")
+    secretRaw String @map("secret_raw")
     enabled Boolean @default(true)
     createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 

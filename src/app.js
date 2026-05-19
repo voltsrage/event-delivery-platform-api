@@ -6,6 +6,9 @@ import { ApiResponse } from './utils/ApiResponse.js';
 import crypto from 'crypto';
 import {tenantRoutes} from './routes/tenants.js';
 import { apiKeyRoutes } from './routes/apiKeys.js';
+import { topicRoutes } from './routes/topics.js';
+import { topicSubscriptionRoutes } from './routes/topicSubscriptions.js';
+import { subscriptionRoutes } from './routes/subscriptions.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -80,7 +83,13 @@ export async function buildApp()
     app.get('/health', async () => ({ status: 'ok' }));
 
     // Routes are registered here in later phases:
+    await app.register(subscriptionRoutes, {prefix: '/api/v1/subscriptions'});
+
     await app.register(tenantRoutes, {prefix: '/api/v1/tenants'});
+
+    await app.register(topicRoutes, {prefix: '/api/v1/topics'});
+
+    await app.register(topicSubscriptionRoutes, {prefix: '/api/v1/topics/:topicId/subscriptions'})
 
     await app.register(apiKeyRoutes, {prefix: '/api/v1/api-keys'});
     

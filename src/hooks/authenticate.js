@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import {prisma} from '../db/prisma.js';
 import { withTenant } from '../utils/withTenant.js';
-import { UnauthorizedError } from '../errors/AppError';
+import { UnauthorizedError } from '../errors/AppError.js';
 
 export async function authenticate(req, res){
     const authHeader = req.headers["authorization"];
