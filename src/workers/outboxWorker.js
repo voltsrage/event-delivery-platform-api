@@ -1,9 +1,11 @@
 import { fileURLToPath } from 'url';
 import {workerPrisma} from '../db/workerClient.js';
-import {publishToKafka} from '../kafka/producer.js';
+import {publishToKafka, connectProducer, disconnectProducer} from '../kafka/producer.js';
 
 const POLL_INTERVAL_MS = 1000;
 const BATCH_SIZE = 100;
+
+let running = true;
 
 export async function pollOutbox() {
     await workerPrisma.$transaction(async (tx) => {
@@ -53,9 +55,25 @@ export async function pollOutbox() {
     });
 }
 
+/*
+The `running` flag lets `SIGTERM` stop the loop between polls cleanly. Without it, 
+setting `running = false` inside the signal handler would not interrupt a poll that is 
+currently awaiting `workerPrisma.$transaction`.
+*/
 async function run() {
-    console.log('[outbox-worker] started');
-    while(true)
+    console.log('[outbox-worker] connecting to Kafka');
+    await connectProducer();
+    console.log('[outbox-worker] connected - starting poll loop');
+
+    process.on('SIGTERM', async () => {
+        console.log('[outbox-worker] SIGTERM received — shutting down');
+        running = false;
+        await disconnectProducer();
+        await workerPrisma.$disconnect();
+        process.exit(0);
+    });
+
+    while(running)
     {
         try {
             await pollOutbox();

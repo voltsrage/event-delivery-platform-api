@@ -2,6 +2,13 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { buildApp } from '../app.js';
 import { prisma } from '../db/prisma.js';
 import { withTenant } from '../utils/withTenant.js';
+import * as producerModule from '../kafka/producer.js';
+
+vi.mock('../kafka/producer.js', () => ({
+    connectProducer:    vi.fn().mockResolvedValue(undefined),
+    disconnectProducer: vi.fn().mockResolvedValue(undefined),
+    publishToKafka:     vi.fn().mockResolvedValue(undefined),
+}));
 
 let app;
 let tenantAKey, tenantBKey;
@@ -190,11 +197,7 @@ describe('RLS isolation', () => {
 // ── Outbox atomicity ──────────────────────────────────────────────────────────
 describe('Outbox atomicity', () => {
     it('event stays unpublished if Kafka publish throws', async () => {
-        // Import the producer module and mock publishToKafka to throw once.
-        const producerModule = await import('../kafka/producer.js');
-        vi.spyOn(producerModule, 'publishToKafka').mockRejectedValueOnce(
-        new Error('Kafka unavailable'),
-        );
+        producerModule.publishToKafka.mockRejectedValueOnce(new Error('Kafka unavailable'));
 
         const { pollOutbox } = await import('../workers/outboxWorker.js');
 
@@ -208,10 +211,48 @@ describe('Outbox atomicity', () => {
         // The event must still be unpublished — the UPDATE was rolled back.
         // events is RLS-protected — must go through withTenant
         const row = await withTenant(tenantAId, (tx) =>
-        tx.event.findUnique({ where: { id: eventId } })
+            tx.event.findUnique({ where: { id: eventId } })
         );
         expect(row.publishedToKafka).toBe(false);
+    });
+});
 
-        vi.restoreAllMocks();
+describe('Outbox worker integration (mocked Kafka)', () => {
+    it('marks event published_to_kafka = true after successful send', async () => {
+        // publishToKafka resolves by default from the module-level mock.
+        const res     = await publishEvent(tenantAKey, topicAId, { idempotencyKey: `outbox-${Date.now()}` });
+        const eventId = JSON.parse(res.body).data.id;
+
+        // Confirm starts unpublished.
+        // events is RLS-protected — must go through withTenant
+        const before = await withTenant(tenantAId, (tx) =>
+            tx.event.findUnique({ where: { id: eventId } })
+        );
+        expect(before.publishedToKafka).toBe(false);
+
+        // Import and run one poll cycle.
+        const { pollOutbox } = await import('../workers/outboxWorker.js');
+        await pollOutbox();
+
+        const after = await withTenant(tenantAId, (tx) =>
+            tx.event.findUnique({ where: { id: eventId } })
+        );
+        expect(after.publishedToKafka).toBe(true);
+    });
+
+    it('leaves event unpublished when Kafka send throws', async () => {
+        producerModule.publishToKafka.mockRejectedValueOnce(new Error('broker down'));
+
+        const res     = await publishEvent(tenantAKey, topicAId, { idempotencyKey: `outbox-fail-${Date.now()}` });
+        const eventId = JSON.parse(res.body).data.id;
+
+        const { pollOutbox } = await import('../workers/outboxWorker.js');
+        await expect(pollOutbox()).rejects.toThrow('broker down');
+
+        // events is RLS-protected — must go through withTenant
+        const row = await withTenant(tenantAId, (tx) =>
+            tx.event.findUnique({ where: { id: eventId } })
+        );
+        expect(row.publishedToKafka).toBe(false);
     });
 });

@@ -113,13 +113,14 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–6):**
+**Current files (Phases 1–7):**
 
 ```
 prisma/
 ├── migrations/                       # Database migration history
 └── schema.prisma                     # All 7 Prisma models with RLS-compatible field mapping
 prisma.config.ts                      # Prisma 7.x datasource config — DATABASE_URL lives here, not in schema.prisma
+docker-compose.yml                    # apache/kafka:3.9.0 (KRaft) + kafka-init topic creation service
 src/
 ├── index.js                          # Server entry point — Fastify startup, PORT from env
 ├── app.js                            # Fastify plugin chain: swagger, error handler, routes
@@ -129,7 +130,8 @@ src/
 ├── hooks/
 │   └── authenticate.js               # API key auth: SHA-256 hash lookup → req.tenantId + req.withTenant
 ├── kafka/
-│   └── producer.js                   # Phase 6 stub — logs to console; replaced with KafkaJS in Phase 7
+│   ├── client.js                     # KafkaJS singleton — clientId + comma-split brokers array
+│   └── producer.js                   # KafkaJS producer — allowAutoTopicCreation: false, tenantId partition key
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
 │   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
@@ -296,12 +298,13 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phases 1–5 (current):**
+**Phases 1–7 (current):**
 - Node.js ≥ 20 (Prisma 7.x requires it; Node 18 causes a silent ESM crash in `@prisma/dev` that leaves the generated client stale)
 - PostgreSQL 14+
+- Docker + Docker Compose (for Kafka)
 
 **Full system (all phases):**
-- Apache Kafka 3.7+ (KRaft mode — no ZooKeeper required)
+- Apache Kafka 3.9+ (KRaft mode — no ZooKeeper required, via Docker)
 - Elasticsearch 8+
 - Redis 7+
 
@@ -355,6 +358,43 @@ npm run seed
 
 Seeds two tenants, three topics each, two subscriptions per topic, and fifty events per tenant. The two-tenant seed is specifically designed to verify RLS isolation — you need a second tenant's data to confirm cross-tenant queries return nothing.
 
+### Kafka Setup (Phase 7+)
+
+**One-time setup per machine:**
+
+```bash
+# 1. Create the shared Docker network used by all local services
+docker network create local-services
+
+# 2. Add kafka hostname to /etc/hosts so the host app can reach the broker
+#    (The broker advertises kafka:9092; this maps it to the Docker port binding)
+echo "127.0.0.1  kafka" | sudo tee -a /etc/hosts
+```
+
+**Start Kafka:**
+
+```bash
+# Starts the broker and runs kafka-init to create the platform.events topic
+docker compose up kafka kafka-init -d
+
+# Verify the topic was created
+docker exec kafka /opt/kafka/bin/kafka-topics.sh \
+  --bootstrap-server localhost:9092 \
+  --describe \
+  --topic platform.events
+# Expect: PartitionCount=6, ReplicationFactor=1, retention.ms=604800000
+```
+
+`kafka-init` waits 15 seconds then creates the `platform.events` topic with 6 partitions. `--if-not-exists` makes it safe to re-run. After `kafka-init` exits cleanly, the broker is ready.
+
+Add to `.env`:
+
+```env
+KAFKA_BROKERS=kafka:9092
+KAFKA_CLIENT_ID=event-platform-outbox
+KAFKA_TOPIC=platform.events
+```
+
 ### Run
 
 ```bash
@@ -365,10 +405,12 @@ npm run dev
 npm start
 ```
 
-The outbox worker runs as a separate process. Start it in a second terminal:
+The outbox worker runs as a separate process. Start it in a second terminal after Kafka is up:
 
 ```bash
 node src/workers/outboxWorker.js
+# Expect: [outbox-worker] connecting to Kafka
+# Expect: [outbox-worker] connected - starting poll loop
 ```
 
 In production (Phase 16) it becomes its own Docker Compose service. It is safe to run multiple instances — `FOR UPDATE SKIP LOCKED` ensures each event is claimed by exactly one worker.
@@ -708,12 +750,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 4 | Topic management (`POST /GET /DELETE /api/v1/topics`, `GET /api/v1/topics/:id`); soft delete via `deleted_at` (topic row kept so event FKs stay valid; subscriptions hard-deleted in the same transaction); compound unique `(tenant_id, name)`; subscription count in GET-by-id response; Vitest tests covering CRUD, duplicate name rejection, RLS isolation, and soft-delete cascade |
 | 5 | Subscription management (`POST /GET /api/v1/topics/:topicId/subscriptions`, `GET /PUT /DELETE /api/v1/subscriptions/:id`, `POST /api/v1/subscriptions/:id/rotate-secret`); per-subscription `whsec_*` signing secret — raw value returned once at creation and rotation, never again; HTTPS enforcement at creation and update; subscription quota checked atomically inside `withTenant` transaction (TOCTOU-safe); Vitest tests covering HTTPS rejection, secret lifecycle, quota, RLS isolation, enable/disable toggle, and delete idempotency |
 | 6 | Event publishing (`POST /api/v1/topics/:topicId/events`, `202 Accepted`); idempotency via partial unique index on `(tenant_id, idempotency_key)`; outbox pattern — `published_to_kafka = false` on insert, background worker polls with `FOR UPDATE SKIP LOCKED` and marks published atomically; `src/workers/outboxWorker.js` exports `pollOutbox` and guards `run()` behind an `isMain` check so test imports do not start the loop; raw SQL table names schema-qualified (`public.events`, `public.topics`) for search_path safety; `src/db/workerClient.js` uses `DATABASE_URL_WORKER` (BYPASSRLS role) with the same `PrismaPg` adapter as the API; Kafka producer is a Phase 6 stub (console log); 13 Vitest tests covering 202 response shape, DB state, idempotency, validation, topic existence, soft-delete, RLS cross-tenant isolation, and outbox rollback atomicity |
+| 7 | Kafka setup — `apache/kafka:3.9.0` in KRaft mode (no ZooKeeper) via Docker Compose on an external `local-services` network; `kafka-init` service creates `platform.events` (6 partitions, 7-day retention) after a 15-second startup wait; `src/kafka/client.js` KafkaJS singleton with comma-split broker array; `src/kafka/producer.js` replaces Phase 6 stub — `allowAutoTopicCreation: false`, `tenantId` partition key, full message envelope; outbox worker connects producer on startup with `SIGTERM` handler for clean shutdown; `vi.mock('../kafka/producer.js')` at the file level in `event.test.js` (file-level hoisting required — `vi.spyOn` does not intercept ESM named imports inside the worker); 4 Vitest unit tests for producer message shape + partition key; 3 Vitest integration tests for outbox atomicity and publish marking |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 7 | Kafka setup (KRaft, Docker Compose) + real KafkaJS producer replacing the Phase 6 stub in `src/kafka/producer.js` |
 | 8 | Webhook delivery worker (Kafka consumer + HMAC signing + HTTP POST) |
 | 9 | Retry scheduling with BullMQ + dead letter creation |
 | 10 | Elasticsearch setup + async delivery log indexing (BullMQ) |

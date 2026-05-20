@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { buildApp } from '../app.js';
-import prisma from '../db/client.js';
+import prisma from '../db/prisma.js';
 
 let app;
 let tenantAKey, tenantBKey;
