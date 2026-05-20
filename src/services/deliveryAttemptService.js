@@ -31,3 +31,21 @@ export async function resolveAttempt({
         });
     });
 }
+
+export async function deadLetterAttempt({
+    tenantId, attemptId, httpStatus, responseBody, durationMs
+})
+{
+    return withTenant(tenantId, async (tx) => {
+        return tx.deliveryAttempt.update({
+            where: {id: attemptId},
+            data: {
+                status: 'dead_lettered',
+                httpStatus: httpStatus ?? null,
+                responseBody: responseBody ?? null,
+                durationMs: durationMs ?? null,
+                nextRetryAt: null
+            }
+        });
+    });
+}

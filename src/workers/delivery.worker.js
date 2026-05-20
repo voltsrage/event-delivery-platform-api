@@ -2,7 +2,10 @@ import {fileURLToPath} from 'node:url';
 import kafka from '../kafka/client.js';
 import { withTenant } from '../utils/withTenant.js';
 import {deliverWebhook} from '../delivery/deliver.js';
-import { createPendingAttempt, resolveAttempt } from '../services/deliveryAttemptService.js';
+import { createPendingAttempt, resolveAttempt,deadLetterAttempt } from '../services/deliveryAttemptService.js';
+import {retryQueue} from '../queues/retryQueue.js';
+import { computeRetryDelay, isLastAttempt } from '../utils/retrySchedule.js';
+import {createDeadLetter} from '../services/deadLetterService.js';
 
 const CONSUMER_GROUP = 'webhook-delivery-worker';
 const consumer = kafka.consumer({groupId: CONSUMER_GROUP});
@@ -42,25 +45,41 @@ export async function processEvent(event){
             event: {eventId, topicName, payload}
         });
 
-        await resolveAttempt({
-            tenantId,
-            attemptId: attempt.id,
-            success: result.success,
-            httpStatus: result.httpStatus,
-            responseBody: result.responseBody,
-            durationMs: result.durationMs,
-            nextRetryAt: null, // Phase 9 computes the backoff schedule here.
-        });
-
-        if(!result.success){
-            // Phase 9: enqueue BullMQ retry job with computed delay.
-            // Logging only in Phase 8.
-            console.warn('[delivery] failed — retry scheduling deferred to Phase 9', {
-                eventId,
-                subscriptionId: sub.id,
-                httpStatus:     result.httpStatus,
+        if(result.success)
+        {
+            await resolveAttempt({
+                tenantId,
+                attemptId: attempt.id,
+                success: result.success,
+                httpStatus: result.httpStatus,
+                responseBody: result.responseBody,
+                durationMs: result.durationMs,
+                nextRetryAt: null, // Phase 9 computes the backoff schedule here.
             });
         }
+        else{
+            const delay = computeRetryDelay(1);
+            const nextRetryAt = delay !== null ? new Date(Date.now() + delay) : null;
+
+            await resolveAttempt({
+                tenantId,
+                attemptId: attempt.id,
+                success: false,
+                httpStatus: result.httpStatus,
+                responseBody: result.responseBody,
+                durationMs: result.durationMs,
+                nextRetryAt
+            });
+
+            if(delay !== null){
+                await retryQueue.add('retry', {
+                    eventId,
+                    subscriptionId: sub.id,
+                    tenantId,
+                    nextAttemptNumber: 2
+                }, {delay})
+            }
+        }         
     }
 }
 

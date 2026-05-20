@@ -107,13 +107,13 @@ Load active subscriptions for (tenant_id, topic_id)
 | Docs | Swagger UI (`@fastify/swagger`) | 2 — installed |
 | Testing | Vitest integration tests | 3 — installed |
 | Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 |
-| Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 |
-| Cache / Rate Limits | Redis (ioredis) | 14 |
+| Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 — installed |
+| Cache / Rate Limits | Redis (ioredis) | 9 (BullMQ backend) / 14 (rate limits) |
 | Search | Elasticsearch 8 | 10 |
 
 ## Project Structure
 
-**Current files (Phases 1–8):**
+**Current files (Phases 1–9):**
 
 ```
 prisma/
@@ -147,21 +147,26 @@ src/
 │   ├── topicController.js
 │   ├── subscriptionController.js
 │   └── eventController.js
+├── queues/
+│   └── retryQueue.js                 # BullMQ Queue('webhook-retry') + redisConnection; attempts:1 (retry logic is explicit, not BullMQ-managed)
 ├── services/
 │   ├── tenantService.js              # Tenant creation + initial API key in one transaction
 │   ├── apiKeyService.js              # Additional key creation, list, revocation
 │   ├── topicService.js               # Topic CRUD; soft-delete via deleted_at; compound unique (tenant_id, name)
 │   ├── subscriptionService.js        # Subscription CRUD; quota check; per-subscription secret management
 │   ├── eventService.js               # Publish: idempotency check → INSERT with published_to_kafka = false
-│   └── deliveryAttemptService.js     # createPendingAttempt + resolveAttempt; uses withTenant for RLS
+│   ├── deliveryAttemptService.js     # createPendingAttempt + resolveAttempt + deadLetterAttempt; uses withTenant for RLS
+│   └── deadLetterService.js          # createDeadLetter; writes dead_letters row after attempt 5 exhausted
 ├── workers/
 │   ├── outboxWorker.js               # FOR UPDATE SKIP LOCKED poller; exports pollOutbox for testing
-│   └── delivery.worker.js            # Kafka consumer; autoCommit: false; exports processEvent for testing
+│   ├── delivery.worker.js            # Kafka consumer; autoCommit: false; failure branch enqueues BullMQ retry job; exports processEvent for testing
+│   └── retryWorker.js                # BullMQ Worker('webhook-retry'); reloads event+subscription from DB on each job; exports processRetryJob for testing
 ├── utils/
 │   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
 │   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
 │   ├── generateSigningSecret.js      # whsec_* signing secret generation + SHA-256 hash (prefix capped at 10 chars)
 │   ├── computeHmac.js                # HMAC-SHA256 over timestamp.payload — timestamp prevents replay attacks
+│   ├── retrySchedule.js              # computeRetryDelay (30s→5m→30m→2h by attempt), isLastAttempt, MAX_ATTEMPTS=5
 │   ├── paginate.js                   # parsePagination + paginatedResponse helpers
 │   ├── withTenant.js                 # SET LOCAL app.current_tenant_id per-transaction
 │   └── logger.js                     # Pino options (pino-pretty in dev, JSON in prod)
@@ -175,7 +180,9 @@ src/
 │   ├── subscription.test.js          # Subscription CRUD, HTTPS enforcement, quota, secret rotation, RLS
 │   ├── event.test.js                 # Event publishing, idempotency, validation, topic checks, RLS, outbox atomicity
 │   ├── hmac.test.js                  # HMAC unit tests: determinism, reference verification, replay protection
-│   └── delivery.test.js              # Delivery integration tests: HTTP delivery, processEvent fan-out, RLS isolation
+│   ├── delivery.test.js              # Delivery integration tests: HTTP delivery, processEvent fan-out, RLS isolation
+│   ├── retry-schedule.test.js        # Retry schedule unit tests: delay values per attempt, isLastAttempt, MAX_ATTEMPTS
+│   └── retry-worker.test.js          # Retry worker integration tests: success path, intermediate failure, dead letter, dropped job
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -305,15 +312,15 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phases 1–8 (current):**
+**Phases 1–9 (current):**
 - Node.js ≥ 20 (Prisma 7.x requires it; Node 18 causes a silent ESM crash in `@prisma/dev` that leaves the generated client stale)
 - PostgreSQL 14+
-- Docker + Docker Compose (for Kafka)
+- Docker + Docker Compose (for Kafka and Redis)
+- Redis 7+ (BullMQ backend for retry queue)
 
 **Full system (all phases):**
 - Apache Kafka 3.9+ (KRaft mode — no ZooKeeper required, via Docker)
 - Elasticsearch 8+
-- Redis 7+
 
 ### Install
 
@@ -402,6 +409,24 @@ KAFKA_CLIENT_ID=event-platform-outbox
 KAFKA_TOPIC=platform.events
 ```
 
+### Redis Setup (Phase 9+)
+
+```bash
+# Start Redis (defined in docker-compose.yml)
+docker compose up redis -d
+
+# Verify
+docker compose exec redis redis-cli ping
+# Expect: PONG
+```
+
+Add to `.env`:
+
+```env
+REDIS_HOST=localhost
+REDIS_PORT=6379
+```
+
 ### Run
 
 ```bash
@@ -412,15 +437,22 @@ npm run dev
 npm start
 ```
 
-The outbox worker runs as a separate process. Start it in a second terminal after Kafka is up:
+The outbox worker, delivery worker, and retry worker each run as separate processes. Start them in additional terminals after Kafka and Redis are up:
 
 ```bash
 node src/workers/outboxWorker.js
 # Expect: [outbox-worker] connecting to Kafka
 # Expect: [outbox-worker] connected - starting poll loop
+
+node src/workers/delivery.worker.js
+# Expect: [delivery-worker] starting...
+# Expect: [delivery-worker] running - waiting for events
+
+node src/workers/retryWorker.js
+# Expect: [retry-worker] started — concurrency=10
 ```
 
-In production (Phase 16) it becomes its own Docker Compose service. It is safe to run multiple instances — `FOR UPDATE SKIP LOCKED` ensures each event is claimed by exactly one worker.
+The outbox worker is safe to run as multiple instances — `FOR UPDATE SKIP LOCKED` ensures each event is claimed by exactly one worker. In production (Phase 16) all workers become their own Docker Compose services.
 
 API docs available at `http://localhost:3096/swagger` (development only).
 
@@ -434,7 +466,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, and webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), and retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
 
 ---
 
@@ -759,12 +791,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 6 | Event publishing (`POST /api/v1/topics/:topicId/events`, `202 Accepted`); idempotency via partial unique index on `(tenant_id, idempotency_key)`; outbox pattern — `published_to_kafka = false` on insert, background worker polls with `FOR UPDATE SKIP LOCKED` and marks published atomically; `src/workers/outboxWorker.js` exports `pollOutbox` and guards `run()` behind an `isMain` check so test imports do not start the loop; raw SQL table names schema-qualified (`public.events`, `public.topics`) for search_path safety; `src/db/workerClient.js` uses `DATABASE_URL_WORKER` (BYPASSRLS role) with the same `PrismaPg` adapter as the API; Kafka producer is a Phase 6 stub (console log); 13 Vitest tests covering 202 response shape, DB state, idempotency, validation, topic existence, soft-delete, RLS cross-tenant isolation, and outbox rollback atomicity |
 | 7 | Kafka setup — `apache/kafka:3.9.0` in KRaft mode (no ZooKeeper) via Docker Compose on an external `local-services` network; `kafka-init` service creates `platform.events` (6 partitions, 7-day retention) after a 15-second startup wait; `src/kafka/client.js` KafkaJS singleton with comma-split broker array; `src/kafka/producer.js` replaces Phase 6 stub — `allowAutoTopicCreation: false`, `tenantId` partition key, full message envelope; outbox worker connects producer on startup with `SIGTERM` handler for clean shutdown; `vi.mock('../kafka/producer.js')` at the file level in `event.test.js` (file-level hoisting required — `vi.spyOn` does not intercept ESM named imports inside the worker); 4 Vitest unit tests for producer message shape + partition key; 3 Vitest integration tests for outbox atomicity and publish marking |
 | 8 | Webhook delivery worker — `src/utils/computeHmac.js` signs `timestamp.payload` with HMAC-SHA256 (timestamp prevents replay attacks; subscribers validate within 5 minutes); `src/delivery/deliver.js` makes the HTTP POST with `AbortController` 10s timeout, HMAC headers, and full response body capture; `src/services/deliveryAttemptService.js` writes `pending` → `success`/`failed` rows via `withTenant` (RLS enforced in the delivery path); `src/workers/delivery.worker.js` Kafka consumer with `autoCommit: false` — offset committed only after all subscriptions for an event are processed (at-least-once guarantee); `isMain` guard prevents Kafka connection on test import; `processEvent` exported for direct Vitest invocation; 5 HMAC unit tests + 8 delivery integration tests |
+| 9 | Retry scheduling + dead letter creation — `src/utils/retrySchedule.js` exports `computeRetryDelay` (30s → 5m → 30m → 2h indexed by failed attempt number), `isLastAttempt`, and `MAX_ATTEMPTS = 5`; `src/queues/retryQueue.js` creates a BullMQ `Queue` named `webhook-retry` with `attempts: 1` (retry logic is managed explicitly — BullMQ-level retries would double-count attempts) and `removeOnComplete/Fail` bounds to cap Redis memory; `src/services/deadLetterService.js` writes `dead_letters` rows; `src/services/deliveryAttemptService.js` gains `deadLetterAttempt` (sets status = `dead_lettered`, clears `nextRetryAt`); `src/workers/delivery.worker.js` failure branch updated — `resolveAttempt` now receives a computed `nextRetryAt` and a BullMQ job is enqueued for attempt 2 with 30s delay; `src/workers/retryWorker.js` BullMQ Worker with `concurrency: 10` — reloads event + subscription from PostgreSQL on each job (picks up endpoint changes between enqueue and processing), delivers, on success resolves, on intermediate failure schedules next attempt with the appropriate backoff delay, on attempt 5 dead-letters the attempt and creates a `dead_letters` row; `isMain` guard prevents Worker construction on test import; `processRetryJob` exported for direct Vitest invocation; 8 retry schedule unit tests + 5 retry worker integration tests |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 9 | Retry scheduling with BullMQ + dead letter creation |
 | 10 | Elasticsearch setup + async delivery log indexing (BullMQ) |
 | 11 | Delivery log search API |
 | 12 | Event replay |

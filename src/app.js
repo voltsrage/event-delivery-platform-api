@@ -95,6 +95,6 @@ export async function buildApp()
     await app.register(apiKeyRoutes, {prefix: '/api/v1/api-keys'});
 
     await app.register(eventRoutes, {prefix: '/api/v1/topics/:topicId/events'})
-    
+
     return app;
 }
