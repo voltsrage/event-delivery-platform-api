@@ -113,7 +113,7 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–5):**
+**Current files (Phases 1–6):**
 
 ```
 prisma/
@@ -124,25 +124,33 @@ src/
 ├── index.js                          # Server entry point — Fastify startup, PORT from env
 ├── app.js                            # Fastify plugin chain: swagger, error handler, routes
 ├── db/
-│   └── prisma.js                     # Prisma client singleton (PrismaPg adapter)
+│   ├── prisma.js                     # Prisma client singleton (PrismaPg adapter)
+│   └── workerClient.js               # Separate Prisma client using DATABASE_URL_WORKER (BYPASSRLS role)
 ├── hooks/
 │   └── authenticate.js               # API key auth: SHA-256 hash lookup → req.tenantId + req.withTenant
+├── kafka/
+│   └── producer.js                   # Phase 6 stub — logs to console; replaced with KafkaJS in Phase 7
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
 │   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
 │   ├── topics.js                     # POST/GET/DELETE /api/v1/topics (authenticated)
 │   ├── topicSubscriptions.js         # POST/GET /api/v1/topics/:topicId/subscriptions
-│   └── subscriptions.js              # GET/PUT/DELETE /api/v1/subscriptions/:id + rotate-secret
+│   ├── subscriptions.js              # GET/PUT/DELETE /api/v1/subscriptions/:id + rotate-secret
+│   └── events.js                     # POST /api/v1/topics/:topicId/events (202 Accepted)
 ├── controllers/
 │   ├── tenantController.js
 │   ├── apiController.js
 │   ├── topicController.js
-│   └── subscriptionController.js
+│   ├── subscriptionController.js
+│   └── eventController.js
 ├── services/
 │   ├── tenantService.js              # Tenant creation + initial API key in one transaction
 │   ├── apiKeyService.js              # Additional key creation, list, revocation
 │   ├── topicService.js               # Topic CRUD; soft-delete via deleted_at; compound unique (tenant_id, name)
-│   └── subscriptionService.js        # Subscription CRUD; quota check; per-subscription secret management
+│   ├── subscriptionService.js        # Subscription CRUD; quota check; per-subscription secret management
+│   └── eventService.js              # Publish: idempotency check → INSERT with published_to_kafka = false
+├── workers/
+│   └── outboxWorker.js               # FOR UPDATE SKIP LOCKED poller; exports pollOutbox for testing
 ├── utils/
 │   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
 │   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
@@ -157,7 +165,8 @@ src/
 │   ├── tenants.test.js               # Integration tests: POST /tenants, GET/POST/DELETE /api-keys
 │   ├── rls-isolation.test.js         # RLS isolation: tenant A queries return zero rows for tenant B
 │   ├── topics.test.js                # Topic CRUD, compound unique constraint, RLS isolation, soft delete
-│   └── subscription.test.js          # Subscription CRUD, HTTPS enforcement, quota, secret rotation, RLS
+│   ├── subscription.test.js          # Subscription CRUD, HTTPS enforcement, quota, secret rotation, RLS
+│   └── event.test.js                 # Event publishing, idempotency, validation, topic checks, RLS, outbox atomicity
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -312,14 +321,14 @@ Edit `.env`:
 
 ```env
 DATABASE_URL=postgresql://admin:password@localhost:5432/event_delivery
+# Outbox worker role — must have BYPASSRLS. Falls back to DATABASE_URL in development.
+DATABASE_URL_WORKER=postgresql://outbox_worker:change_in_env@localhost:5432/event_delivery
 KAFKA_BROKERS=localhost:9092
 ELASTICSEARCH_URL=http://localhost:9200
 REDIS_URL=redis://localhost:6379
 NODE_ENV=development
 LOG_LEVEL=info
 PORT=3096
-# Optional: outbox worker poll interval (ms). Default 1000.
-# OUTBOX_POLL_INTERVAL_MS=1000
 ```
 
 `DATABASE_URL` is read by `prisma.config.ts` via `env("DATABASE_URL")`. The `datasource db` block in `schema.prisma` intentionally has no `url` property — Prisma 7.x reads the connection string from `prisma.config.ts`, not from the schema file.
@@ -356,6 +365,14 @@ npm run dev
 npm start
 ```
 
+The outbox worker runs as a separate process. Start it in a second terminal:
+
+```bash
+node src/workers/outboxWorker.js
+```
+
+In production (Phase 16) it becomes its own Docker Compose service. It is safe to run multiple instances — `FOR UPDATE SKIP LOCKED` ensures each event is claimed by exactly one worker.
+
 API docs available at `http://localhost:3096/swagger` (development only).
 
 ### Test
@@ -368,7 +385,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD (create, list, revoke), authentication edge cases (missing header, invalid key, revoked key), and RLS isolation (a query with no `WHERE tenant_id` clause must return zero rows belonging to another tenant). The RLS isolation suite requires the seed data (`npm run seed`) to be present before running.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, and event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
 
 ---
 
@@ -690,13 +707,13 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 3 | Tenant registration (`POST /api/v1/tenants` — unauthenticated, returns raw key once); API key management (`POST /GET /DELETE /api/v1/api-keys` — authenticated); Vitest integration tests for all three endpoints including cross-tenant isolation and revocation; RLS isolation test suite (`rls-isolation.test.js`) |
 | 4 | Topic management (`POST /GET /DELETE /api/v1/topics`, `GET /api/v1/topics/:id`); soft delete via `deleted_at` (topic row kept so event FKs stay valid; subscriptions hard-deleted in the same transaction); compound unique `(tenant_id, name)`; subscription count in GET-by-id response; Vitest tests covering CRUD, duplicate name rejection, RLS isolation, and soft-delete cascade |
 | 5 | Subscription management (`POST /GET /api/v1/topics/:topicId/subscriptions`, `GET /PUT /DELETE /api/v1/subscriptions/:id`, `POST /api/v1/subscriptions/:id/rotate-secret`); per-subscription `whsec_*` signing secret — raw value returned once at creation and rotation, never again; HTTPS enforcement at creation and update; subscription quota checked atomically inside `withTenant` transaction (TOCTOU-safe); Vitest tests covering HTTPS rejection, secret lifecycle, quota, RLS isolation, enable/disable toggle, and delete idempotency |
+| 6 | Event publishing (`POST /api/v1/topics/:topicId/events`, `202 Accepted`); idempotency via partial unique index on `(tenant_id, idempotency_key)`; outbox pattern — `published_to_kafka = false` on insert, background worker polls with `FOR UPDATE SKIP LOCKED` and marks published atomically; `src/workers/outboxWorker.js` exports `pollOutbox` and guards `run()` behind an `isMain` check so test imports do not start the loop; raw SQL table names schema-qualified (`public.events`, `public.topics`) for search_path safety; `src/db/workerClient.js` uses `DATABASE_URL_WORKER` (BYPASSRLS role) with the same `PrismaPg` adapter as the API; Kafka producer is a Phase 6 stub (console log); 13 Vitest tests covering 202 response shape, DB state, idempotency, validation, topic existence, soft-delete, RLS cross-tenant isolation, and outbox rollback atomicity |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 6 | Event publishing + outbox pattern + idempotency |
-| 7 | Kafka setup (KRaft, Docker Compose) + outbox worker (`FOR UPDATE SKIP LOCKED`) |
+| 7 | Kafka setup (KRaft, Docker Compose) + real KafkaJS producer replacing the Phase 6 stub in `src/kafka/producer.js` |
 | 8 | Webhook delivery worker (Kafka consumer + HMAC signing + HTTP POST) |
 | 9 | Retry scheduling with BullMQ + dead letter creation |
 | 10 | Elasticsearch setup + async delivery log indexing (BullMQ) |
