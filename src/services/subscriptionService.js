@@ -19,8 +19,8 @@ function toPublicSubscription(sub, rawSecret = null){
     const out = {
         id: sub.id,
         topicId: sub.topicId,
-        endpoint: sub.endpoint,
-        isEnabled: sub.isEnabled,
+        endpoint: sub.endpointUrl,
+        isEnabled: sub.enabled,
         secretPrefix: sub.secretPrefix,
         createdAt: sub.createdAt,
         updatedAt: sub.updatedAt
@@ -58,7 +58,7 @@ export async function createSubscription({tenantId, topicId, endpoint}){
         if(!topic) throw new NotFoundError('Topic not found', 'TOPIC_NOT_FOUND');
 
         return tx.subscription.create({
-            data: {tenantId, topicId, endpoint, secretHash, secretRaw: rawSecret, secretPrefix}
+            data: {tenantId, topicId, endpointUrl: endpoint, secretHash, secretRaw: rawSecret, secretPrefix}
         });
     });
 
@@ -105,8 +105,8 @@ export async function updateSubscription({tenantId, subscriptionId, endpoint, is
         return tx.subscription.update({
             where: {id: subscriptionId},
             data: {
-                ...(endpoint !== undefined && {endpoint}),
-                ...(isEnabled !== undefined && {isEnabled})
+                ...(endpoint !== undefined && {endpointUrl: endpoint}),
+                ...(isEnabled !== undefined && {enabled: isEnabled})
             }
         });
     });
@@ -133,7 +133,7 @@ export async function rotateSecret({tenantId, subscriptionId}){
 
         return tx.subscription.update({
             where: {id: subscriptionId},
-            data: {secretHash, secretHash: rawSecret, secretPrefix}
+            data: {secretHash, secretRaw: rawSecret, secretPrefix}
         });
     });
 

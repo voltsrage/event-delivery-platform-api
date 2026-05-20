@@ -113,7 +113,7 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–7):**
+**Current files (Phases 1–8):**
 
 ```
 prisma/
@@ -132,6 +132,8 @@ src/
 ├── kafka/
 │   ├── client.js                     # KafkaJS singleton — clientId + comma-split brokers array
 │   └── producer.js                   # KafkaJS producer — allowAutoTopicCreation: false, tenantId partition key
+├── delivery/
+│   └── deliver.js                    # HTTP POST with AbortController 10s timeout + HMAC headers; captures response body
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
 │   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
@@ -150,13 +152,16 @@ src/
 │   ├── apiKeyService.js              # Additional key creation, list, revocation
 │   ├── topicService.js               # Topic CRUD; soft-delete via deleted_at; compound unique (tenant_id, name)
 │   ├── subscriptionService.js        # Subscription CRUD; quota check; per-subscription secret management
-│   └── eventService.js              # Publish: idempotency check → INSERT with published_to_kafka = false
+│   ├── eventService.js               # Publish: idempotency check → INSERT with published_to_kafka = false
+│   └── deliveryAttemptService.js     # createPendingAttempt + resolveAttempt; uses withTenant for RLS
 ├── workers/
-│   └── outboxWorker.js               # FOR UPDATE SKIP LOCKED poller; exports pollOutbox for testing
+│   ├── outboxWorker.js               # FOR UPDATE SKIP LOCKED poller; exports pollOutbox for testing
+│   └── delivery.worker.js            # Kafka consumer; autoCommit: false; exports processEvent for testing
 ├── utils/
 │   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
 │   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
-│   ├── generateSigningSecret.js      # whsec_* signing secret generation + SHA-256 hash
+│   ├── generateSigningSecret.js      # whsec_* signing secret generation + SHA-256 hash (prefix capped at 10 chars)
+│   ├── computeHmac.js                # HMAC-SHA256 over timestamp.payload — timestamp prevents replay attacks
 │   ├── paginate.js                   # parsePagination + paginatedResponse helpers
 │   ├── withTenant.js                 # SET LOCAL app.current_tenant_id per-transaction
 │   └── logger.js                     # Pino options (pino-pretty in dev, JSON in prod)
@@ -168,7 +173,9 @@ src/
 │   ├── rls-isolation.test.js         # RLS isolation: tenant A queries return zero rows for tenant B
 │   ├── topics.test.js                # Topic CRUD, compound unique constraint, RLS isolation, soft delete
 │   ├── subscription.test.js          # Subscription CRUD, HTTPS enforcement, quota, secret rotation, RLS
-│   └── event.test.js                 # Event publishing, idempotency, validation, topic checks, RLS, outbox atomicity
+│   ├── event.test.js                 # Event publishing, idempotency, validation, topic checks, RLS, outbox atomicity
+│   ├── hmac.test.js                  # HMAC unit tests: determinism, reference verification, replay protection
+│   └── delivery.test.js              # Delivery integration tests: HTTP delivery, processEvent fan-out, RLS isolation
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -298,7 +305,7 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phases 1–7 (current):**
+**Phases 1–8 (current):**
 - Node.js ≥ 20 (Prisma 7.x requires it; Node 18 causes a silent ESM crash in `@prisma/dev` that leaves the generated client stale)
 - PostgreSQL 14+
 - Docker + Docker Compose (for Kafka)
@@ -427,7 +434,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, and event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, and webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
 
 ---
 
@@ -751,12 +758,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 5 | Subscription management (`POST /GET /api/v1/topics/:topicId/subscriptions`, `GET /PUT /DELETE /api/v1/subscriptions/:id`, `POST /api/v1/subscriptions/:id/rotate-secret`); per-subscription `whsec_*` signing secret — raw value returned once at creation and rotation, never again; HTTPS enforcement at creation and update; subscription quota checked atomically inside `withTenant` transaction (TOCTOU-safe); Vitest tests covering HTTPS rejection, secret lifecycle, quota, RLS isolation, enable/disable toggle, and delete idempotency |
 | 6 | Event publishing (`POST /api/v1/topics/:topicId/events`, `202 Accepted`); idempotency via partial unique index on `(tenant_id, idempotency_key)`; outbox pattern — `published_to_kafka = false` on insert, background worker polls with `FOR UPDATE SKIP LOCKED` and marks published atomically; `src/workers/outboxWorker.js` exports `pollOutbox` and guards `run()` behind an `isMain` check so test imports do not start the loop; raw SQL table names schema-qualified (`public.events`, `public.topics`) for search_path safety; `src/db/workerClient.js` uses `DATABASE_URL_WORKER` (BYPASSRLS role) with the same `PrismaPg` adapter as the API; Kafka producer is a Phase 6 stub (console log); 13 Vitest tests covering 202 response shape, DB state, idempotency, validation, topic existence, soft-delete, RLS cross-tenant isolation, and outbox rollback atomicity |
 | 7 | Kafka setup — `apache/kafka:3.9.0` in KRaft mode (no ZooKeeper) via Docker Compose on an external `local-services` network; `kafka-init` service creates `platform.events` (6 partitions, 7-day retention) after a 15-second startup wait; `src/kafka/client.js` KafkaJS singleton with comma-split broker array; `src/kafka/producer.js` replaces Phase 6 stub — `allowAutoTopicCreation: false`, `tenantId` partition key, full message envelope; outbox worker connects producer on startup with `SIGTERM` handler for clean shutdown; `vi.mock('../kafka/producer.js')` at the file level in `event.test.js` (file-level hoisting required — `vi.spyOn` does not intercept ESM named imports inside the worker); 4 Vitest unit tests for producer message shape + partition key; 3 Vitest integration tests for outbox atomicity and publish marking |
+| 8 | Webhook delivery worker — `src/utils/computeHmac.js` signs `timestamp.payload` with HMAC-SHA256 (timestamp prevents replay attacks; subscribers validate within 5 minutes); `src/delivery/deliver.js` makes the HTTP POST with `AbortController` 10s timeout, HMAC headers, and full response body capture; `src/services/deliveryAttemptService.js` writes `pending` → `success`/`failed` rows via `withTenant` (RLS enforced in the delivery path); `src/workers/delivery.worker.js` Kafka consumer with `autoCommit: false` — offset committed only after all subscriptions for an event are processed (at-least-once guarantee); `isMain` guard prevents Kafka connection on test import; `processEvent` exported for direct Vitest invocation; 5 HMAC unit tests + 8 delivery integration tests |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 8 | Webhook delivery worker (Kafka consumer + HMAC signing + HTTP POST) |
 | 9 | Retry scheduling with BullMQ + dead letter creation |
 | 10 | Elasticsearch setup + async delivery log indexing (BullMQ) |
 | 11 | Delivery log search API |
