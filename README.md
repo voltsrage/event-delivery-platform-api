@@ -113,7 +113,7 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–3):**
+**Current files (Phases 1–5):**
 
 ```
 prisma/
@@ -129,16 +129,25 @@ src/
 │   └── authenticate.js               # API key auth: SHA-256 hash lookup → req.tenantId + req.withTenant
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
-│   └── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
+│   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
+│   ├── topics.js                     # POST/GET/DELETE /api/v1/topics (authenticated)
+│   ├── topicSubscriptions.js         # POST/GET /api/v1/topics/:topicId/subscriptions
+│   └── subscriptions.js              # GET/PUT/DELETE /api/v1/subscriptions/:id + rotate-secret
 ├── controllers/
 │   ├── tenantController.js
-│   └── apiController.js
+│   ├── apiController.js
+│   ├── topicController.js
+│   └── subscriptionController.js
 ├── services/
 │   ├── tenantService.js              # Tenant creation + initial API key in one transaction
-│   └── apiKeyService.js              # Additional key creation, list, revocation
+│   ├── apiKeyService.js              # Additional key creation, list, revocation
+│   ├── topicService.js               # Topic CRUD; soft-delete via deleted_at; compound unique (tenant_id, name)
+│   └── subscriptionService.js        # Subscription CRUD; quota check; per-subscription secret management
 ├── utils/
 │   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
 │   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
+│   ├── generateSigningSecret.js      # whsec_* signing secret generation + SHA-256 hash
+│   ├── paginate.js                   # parsePagination + paginatedResponse helpers
 │   ├── withTenant.js                 # SET LOCAL app.current_tenant_id per-transaction
 │   └── logger.js                     # Pino options (pino-pretty in dev, JSON in prod)
 ├── errors/
@@ -146,7 +155,9 @@ src/
 │                                     #   UnauthorizedError, ForbiddenError, TooManyRequestsError
 ├── test/
 │   ├── tenants.test.js               # Integration tests: POST /tenants, GET/POST/DELETE /api-keys
-│   └── rls-isolation.test.js         # RLS isolation: tenant A queries return zero rows for tenant B
+│   ├── rls-isolation.test.js         # RLS isolation: tenant A queries return zero rows for tenant B
+│   ├── topics.test.js                # Topic CRUD, compound unique constraint, RLS isolation, soft delete
+│   └── subscription.test.js          # Subscription CRUD, HTTPS enforcement, quota, secret rotation, RLS
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -276,8 +287,8 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phases 1–3 (current):**
-- Node.js 18+
+**Phases 1–5 (current):**
+- Node.js ≥ 20 (Prisma 7.x requires it; Node 18 causes a silent ESM crash in `@prisma/dev` that leaves the generated client stale)
 - PostgreSQL 14+
 
 **Full system (all phases):**
@@ -316,9 +327,10 @@ PORT=3096
 ### Migrate and Generate Prisma Client
 
 ```bash
-npm run db:migrate
-npm run db:generate
+npm run db:migrate   # runs prisma migrate dev && prisma generate
 ```
+
+`prisma migrate dev` auto-invokes `prisma generate` at the end, but that internal call can fail silently on Node 18 (see Prerequisites). `db:migrate` chains an explicit second `prisma generate` so any failure exits visibly. The `postinstall` script also runs `prisma generate` automatically after every `npm install`.
 
 The generated client is written to `generated/prisma/`. Import it in application code as:
 
@@ -550,9 +562,10 @@ Indexes: `(tenant_id) WHERE deleted_at IS NULL`
 id            UUID        PK
 tenant_id     UUID        → tenants (ON DELETE CASCADE)
 topic_id      UUID        → topics (ON DELETE CASCADE)
-endpoint_url  TEXT        must be HTTPS — HTTP rejected at creation
-secret_hash   VARCHAR(64) SHA-256 of signing secret; actual secret in secrets store
-secret_prefix VARCHAR(10) display only
+endpoint_url  TEXT        must be HTTPS — HTTP rejected at creation and update
+secret_hash   VARCHAR(64) SHA-256 of signing secret
+secret_prefix VARCHAR(10) display only; returned on every GET
+secret_raw    TEXT        plaintext secret — project simplification (no Vault); raw value returned once at creation/rotation only
 enabled       BOOLEAN     default true; disable preserves history
 created_at    TIMESTAMPTZ
 ```
@@ -675,13 +688,13 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 1 | PostgreSQL schema — Prisma models for all 7 entities (`Tenant`, `ApiKey`, `Topic`, `Subscription`, `Event`, `DeliveryAttempt`, `DeadLetter`) with RLS-compatible field mapping, partial indexes, compound unique constraints, and cascade delete semantics; Prisma 7.x config in `prisma.config.ts` (datasource URL lives here, not in `schema.prisma`); generator output to `generated/prisma/`; `src/db/prisma.js` Prisma client singleton using `PrismaPg` driver adapter; `src/seed/seed.ts` dev seed (2 tenants, 3 topics each, 2 subscriptions per topic, 50 events per tenant) |
 | 2 | Fastify server (`src/index.js` + `src/app.js`) with Swagger UI, global error handler, 404 handler, `GET /health` liveness check; `authenticate` hook (SHA-256 hash lookup, async `last_used_at` update, `req.withTenant` bound to transaction); `withTenant` utility (`SET LOCAL app.current_tenant_id` scoped to transaction); Pino logger (pino-pretty in dev, JSON in prod); `ApiResponse` envelope; `AppError` hierarchy |
 | 3 | Tenant registration (`POST /api/v1/tenants` — unauthenticated, returns raw key once); API key management (`POST /GET /DELETE /api/v1/api-keys` — authenticated); Vitest integration tests for all three endpoints including cross-tenant isolation and revocation; RLS isolation test suite (`rls-isolation.test.js`) |
+| 4 | Topic management (`POST /GET /DELETE /api/v1/topics`, `GET /api/v1/topics/:id`); soft delete via `deleted_at` (topic row kept so event FKs stay valid; subscriptions hard-deleted in the same transaction); compound unique `(tenant_id, name)`; subscription count in GET-by-id response; Vitest tests covering CRUD, duplicate name rejection, RLS isolation, and soft-delete cascade |
+| 5 | Subscription management (`POST /GET /api/v1/topics/:topicId/subscriptions`, `GET /PUT /DELETE /api/v1/subscriptions/:id`, `POST /api/v1/subscriptions/:id/rotate-secret`); per-subscription `whsec_*` signing secret — raw value returned once at creation and rotation, never again; HTTPS enforcement at creation and update; subscription quota checked atomically inside `withTenant` transaction (TOCTOU-safe); Vitest tests covering HTTPS rejection, secret lifecycle, quota, RLS isolation, enable/disable toggle, and delete idempotency |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 4 | Topic management (CRUD + soft delete) |
-| 5 | Subscription management (CRUD + per-subscription signing secret + rotate-secret) |
 | 6 | Event publishing + outbox pattern + idempotency |
 | 7 | Kafka setup (KRaft, Docker Compose) + outbox worker (`FOR UPDATE SKIP LOCKED`) |
 | 8 | Webhook delivery worker (Kafka consumer + HMAC signing + HTTP POST) |

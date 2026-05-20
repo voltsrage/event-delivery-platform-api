@@ -9,6 +9,7 @@ import { apiKeyRoutes } from './routes/apiKeys.js';
 import { topicRoutes } from './routes/topics.js';
 import { topicSubscriptionRoutes } from './routes/topicSubscriptions.js';
 import { subscriptionRoutes } from './routes/subscriptions.js';
+import {eventRoutes} from './routes/events.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -92,6 +93,8 @@ export async function buildApp()
     await app.register(topicSubscriptionRoutes, {prefix: '/api/v1/topics/:topicId/subscriptions'})
 
     await app.register(apiKeyRoutes, {prefix: '/api/v1/api-keys'});
+
+    await app.register(eventRoutes, {prefix: '/api/v1/topics/:topicId/events'})
     
     return app;
 }
