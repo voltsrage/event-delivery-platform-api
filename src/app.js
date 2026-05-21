@@ -12,6 +12,7 @@ import { subscriptionRoutes } from './routes/subscriptions.js';
 import {eventRoutes} from './routes/events.js';
 import { deliveryLogRoutes } from './routes/deliveryLogs.js';
 import { deadLetterRoutes } from './routes/deadLetters.js';
+import { healthRoutes } from './routes/health.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -83,7 +84,6 @@ export async function buildApp()
     });
 
     // Liveness health check — public, no auth
-    app.get('/health', async () => ({ status: 'ok' }));
 
     // Routes are registered here in later phases:
     await app.register(subscriptionRoutes, {prefix: '/api/v1/subscriptions'});
@@ -100,7 +100,9 @@ export async function buildApp()
 
     await app.register(eventRoutes, {prefix: '/api/v1/topics/:topicId/events'});
 
-    await app.register(deadLetterRoutes, {prefix: '/api/v1/dead-letters'})
+    await app.register(deadLetterRoutes, {prefix: '/api/v1/dead-letters'});
+
+    await app.register(healthRoutes);
 
     return app;
 }

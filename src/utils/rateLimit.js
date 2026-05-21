@@ -1,5 +1,5 @@
 import { redis } from "../db/redis.js";
-import { TooManyRequestsError } from "../errors/AppError";
+import { TooManyRequestsError } from "../errors/AppError.js";
 
 // Limits keyed by action name. windowSecs is the counter TTL in second.
 const LIMITS = {

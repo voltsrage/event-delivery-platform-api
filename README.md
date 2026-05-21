@@ -113,7 +113,7 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–13):**
+**Current files (Phases 1–14):**
 
 ```
 prisma/
@@ -126,6 +126,7 @@ src/
 ├── app.js                            # Fastify plugin chain: swagger, error handler, routes
 ├── db/
 │   ├── prisma.js                     # Prisma client singleton (PrismaPg adapter)
+│   ├── redis.js                      # ioredis singleton with lazyConnect: true (rate limits + BullMQ backend)
 │   └── workerClient.js               # Separate Prisma client using DATABASE_URL_WORKER (BYPASSRLS role)
 ├── hooks/
 │   └── authenticate.js               # API key auth: SHA-256 hash lookup → req.tenantId + req.withTenant
@@ -180,6 +181,7 @@ src/
 │   ├── computeHmac.js                # HMAC-SHA256 over timestamp.payload — timestamp prevents replay attacks
 │   ├── retrySchedule.js              # computeRetryDelay (30s→5m→30m→2h by attempt), isLastAttempt, MAX_ATTEMPTS=5
 │   ├── paginate.js                   # parsePagination + paginatedResponse helpers
+│   ├── rateLimit.js                  # checkRateLimit(tenantId, action) — fixed-window INCR/EXPIRE counter; throws TooManyRequestsError
 │   ├── withTenant.js                 # SET LOCAL app.current_tenant_id per-transaction
 │   └── logger.js                     # Pino options (pino-pretty in dev, JSON in prod)
 ├── errors/
@@ -198,7 +200,8 @@ src/
 │   ├── indexing.test.js              # Indexing tests: buildDeliveryLogDocument shape, processIndexJob ES call, integration fan-out
 │   ├── delivery-log-search.test.js   # 20 tests: tenant scoping, optional filters, pagination, GET by ID, validation; ES mocked
 │   ├── replay.test.js                # 8 tests: happy path, date filter, no-match, error cases (404/422/401), RLS isolation
-│   └── dead-letter.test.js           # 10 tests: list with eventType/endpointUrl, RLS isolation, GET by ID with attempt history, 404s, retry success + failure paths
+│   ├── dead-letter.test.js           # 10 tests: list with eventType/endpointUrl, RLS isolation, GET by ID with attempt history, 404s, retry success + failure paths
+│   └── rate-limit.test.js            # 9 tests: event publish limit (202/429/Retry-After/key scoping/TTL-on-first-only), subscription creation limit, unguarded routes
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -504,7 +507,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions), delivery log indexing (`buildDeliveryLogDocument` shape, `processIndexJob` Elasticsearch call and error propagation, and integration fan-out verifying one indexing job per subscription per delivery), delivery log search (tenant scoping — `tenant_id` always in filter context; optional `status`, `topicName`, `from`/`to`, and `q` filters; pagination offset and `totalPages`; GET by ID with cross-tenant isolation; Fastify schema validation), event replay (`POST /subscriptions/:id/replay` happy path, date filter, no-match with no `addBulk` call, error cases, and RLS cross-tenant isolation), and dead letter management (paginated list with `eventType` and `endpointUrl`, RLS isolation, GET by ID with full delivery attempt history, 404 for unknown and cross-tenant IDs, manual retry success path — `resolvedAt` set in DB and returned, manual retry failure path — `resolvedAt` stays null, new `delivery_attempts` row created on both paths). The ES client is mocked in the search tests — no running cluster required. The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running. 80 tests total.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions), delivery log indexing (`buildDeliveryLogDocument` shape, `processIndexJob` Elasticsearch call and error propagation, and integration fan-out verifying one indexing job per subscription per delivery), delivery log search (tenant scoping — `tenant_id` always in filter context; optional `status`, `topicName`, `from`/`to`, and `q` filters; pagination offset and `totalPages`; GET by ID with cross-tenant isolation; Fastify schema validation), event replay (`POST /subscriptions/:id/replay` happy path, date filter, no-match with no `addBulk` call, error cases, and RLS cross-tenant isolation), dead letter management (paginated list with `eventType` and `endpointUrl`, RLS isolation, GET by ID with full delivery attempt history, 404 for unknown and cross-tenant IDs, manual retry success path — `resolvedAt` set in DB and returned, manual retry failure path — `resolvedAt` stays null, new `delivery_attempts` row created on both paths), and rate limiting (event publish limit returns 202 under 1,000 and 429 above it, `Retry-After` header equals remaining Redis TTL, INCR key is scoped to `tenantId` not IP, `expire` called only on first request in window, subscription creation limit uses a separate key so counters are independent, unguarded routes do not touch Redis; Redis mocked via `vi.mock`). The ES client is mocked in the search tests — no running cluster required. The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running. 89 tests total.
 
 ---
 
@@ -834,12 +837,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 11 | Delivery log search API — `GET /api/v1/delivery-logs` with optional `status`, `topicName`, `from`/`to` date range, and free-text `q` filters; `GET /api/v1/delivery-logs/:attemptId` by Elasticsearch `_id`; `buildQuery` separates hard filters (`filter` context — cached, no score) from full-text search (`must` context — relevance-scored); `{ term: { tenant_id } }` in `filter` on every query (Elasticsearch has no RLS equivalent — tenant isolation is application-enforced); `GET` by ID fetches without a query filter then checks `_source.tenant_id === tenantId` in application code — mismatch returns `404` to avoid confirming a document exists for another tenant; `track_total_hits: true` on every search for accurate `totalPages` beyond the 10,000-document default cap; fixed `Math.min` → `Math.max` in `parsePagination` so page numbers above 1 are honoured; controller extracted to `src/controllers/deliveryLogController.js`; routes in `src/routes/deliveryLogs.js` with Fastify schema validation (`status` enum, `pageSize` max 100); 20 Vitest tests — ES client mocked, real tenant registration and DB teardown |
 | 12 | Event replay — `POST /api/v1/subscriptions/:id/replay` accepts a `from` ISO 8601 timestamp; reads qualifying events from PostgreSQL under the tenant's RLS context (source of truth, not Kafka offset reset — resetting a partition offset would affect all tenants on that partition); bulk-enqueues one BullMQ replay job per event into the existing `webhook-retry` queue with `{ name: 'replay', data: { eventId, subscriptionId, tenantId, nextAttemptNumber: 1 } }` — piggybacking the retry worker with no new worker needed; `addBulk` skipped when no events match to avoid a BullMQ empty-array error; `ValidationError` (422) on non-parseable `from`; `NotFoundError` (404) when subscription not found or RLS returns null (cross-tenant isolation); `src/services/replayService.js` new; `src/controllers/subscriptionController.js` + `src/routes/subscriptions.js` updated; 8 Vitest tests |
 | 13 | Dead letter management — `GET /api/v1/dead-letters` paginated list with `eventType` and `endpointUrl` included via Prisma `include`; `GET /api/v1/dead-letters/:id` returns full `event` object and `deliveryAttempts` array (all attempt history for the `(eventId, subscriptionId)` pair); `POST /api/v1/dead-letters/:id/retry` delivers synchronously (not via BullMQ — caller sees the result immediately), sets `resolvedAt` only on success, leaves it null on failure so the record remains in the unresolved backlog; each manual retry creates a new `delivery_attempts` row with `attemptNumber = totalAttempts + 1`; `src/controllers/deadLetterController.js` and `src/routes/deadLetters.js` new; `src/services/deadLetterService.js` expanded with `listDeadLetters`, `getDeadLetterById`, `retryDeadLetter`, `toPublicDeadLetter`; 10 Vitest tests |
+| 14 | Rate limiting — event publishing capped at 1,000 events/minute per tenant; subscription creation capped at 10/hour; fixed-window INCR/EXPIRE counter (one round-trip in steady state vs. three for a sliding window); check placed in each controller, not a hook, so the limit is co-located with the operation and trivially testable by mocking Redis; key format `rl:<action>:<tenantId>` isolates counters by action and tenant; `expire` called only when `incr` returns 1 (first request in window) so the window is not reset on every request; `Retry-After` header carries remaining TTL from Redis; `ioredis` singleton with `lazyConnect: true` in `src/db/redis.js`; `src/utils/rateLimit.js` new; `src/controllers/eventController.js` and `src/controllers/subscriptionController.js` updated; 9 Vitest tests (Redis mocked via `vi.mock`) |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 14 | Rate limiting + tenant subscription quota |
 | 15 | Health checks (PostgreSQL + Kafka + Elasticsearch + Redis) |
 | 16 | Docker Compose (Kafka KRaft, Elasticsearch, PostgreSQL, Redis, Seq, Nginx) |
 | 17 | GitLab CI/CD |

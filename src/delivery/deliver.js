@@ -1,4 +1,4 @@
-import { computeHmac } from "../utils/computeHmac";
+import { computeHmac } from "../utils/computeHmac.js";
 
 const DELIVERY_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BODY_LEN = 1024;
