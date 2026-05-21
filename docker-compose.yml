@@ -1,0 +1,125 @@
+services:
+
+  migrate:
+    build: .
+    entrypoint: ["sh", "/app/docker/migrate-and-grant.sh"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      APP_DB_USER: ${APP_DB_USER}
+      WORKER_DB_USER: ${WORKER_DB_USER}
+    networks:
+      - local_services
+    restart: "no"
+
+  api:
+    build: .
+    command: ["node", "src/index.js"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      DATABASE_URL_WORKER: ${DATABASE_URL_WORKER}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-event-platform}
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-platform.events}
+      ELASTICSEARCH_URL: ${ELASTICSEARCH_URL}
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-delivery-logs}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      PORT: ${PORT:-3075}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - local_services
+    restart: unless-stopped
+
+  outbox-worker:
+    build: .
+    command: ["node", "src/workers/outboxWorker.js"]
+    environment:
+      DATABASE_URL_WORKER: ${DATABASE_URL_WORKER}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-event-platform}-outbox
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-platform.events}
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - local_services
+    restart: unless-stopped
+
+  delivery-worker:
+    build: .
+    command: ["node", "src/workers/delivery.worker.js"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      KAFKA_BROKERS: ${KAFKA_BROKERS}
+      KAFKA_CLIENT_ID: ${KAFKA_CLIENT_ID:-event-platform}-delivery
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-platform.events}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - local_services
+    restart: unless-stopped
+
+  retry-worker:
+    build: .
+    command: ["node", "src/workers/retryWorker.js"]
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - local_services
+    restart: unless-stopped
+
+  indexing-worker:
+    build: .
+    command: ["node", "src/workers/indexingWorker.js"]
+    environment:
+      REDIS_HOST: ${REDIS_HOST}
+      REDIS_PORT: ${REDIS_PORT:-6379}
+      ELASTIC_SEARCH_URL: ${ELASTICSEARCH_URL}
+      ELASTICSEARCH_INDEX: ${ELASTICSEARCH_INDEX:-delivery-logs}
+      SEQ_SERVER_URL: ${SEQ_SERVER_URL:-}
+      NODE_ENV: ${NODE_ENV:-production}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - local_services
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    networks:
+      - local_services
+    restart: unless-stopped
+
+networks:
+  local_services:
+    external: true

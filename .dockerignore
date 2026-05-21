@@ -1,0 +1,13 @@
+node_modules
+.env
+.env.*
+!.env.example
+generated
+*.log
+.git
+.gitignore
+docker-compose.yml
+README.md
+docs/
+src/test/
+src/seed/

@@ -103,17 +103,20 @@ Load active subscriptions for (tenant_id, topic_id)
 | SQL Database | PostgreSQL with Row-Level Security (Prisma) | 1 — installed |
 | Server | Node.js, Fastify | 2 — installed |
 | Auth | API key — SHA-256 hash lookup; no JWT | 2 — installed |
-| Logging | Pino (pino-pretty in dev) | 2 — installed |
+| Logging | Pino (pino-pretty in dev, pino-seq in prod) | 2 — installed |
 | Docs | Swagger UI (`@fastify/swagger`) | 2 — installed |
 | Testing | Vitest integration tests | 3 — installed |
-| Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 |
+| Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 — installed |
 | Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 — installed |
 | Cache / Rate Limits | Redis (ioredis) | 9 (BullMQ backend) / 14 (rate limits) |
 | Search | Elasticsearch 8 (`@elastic/elasticsearch` v8) | 10 — installed |
+| Log Aggregation | Seq (datalust/seq — Pino → Seq via pino-seq transport) | 16 — installed |
+| Containerisation | Docker Compose (all services) | 16 — installed |
+| Ingress | Nginx (reverse proxy) | 16 — installed |
 
 ## Project Structure
 
-**Current files (Phases 1–14):**
+**Current files (Phases 1–16):**
 
 ```
 prisma/
@@ -206,6 +209,17 @@ src/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
 └── prisma/                           # Generated Prisma client (output of `npm run db:generate`)
+docker/
+├── postgres/
+│   └── 01-init.sh                    # Creates api_user (RLS enforced) and outbox_worker (BYPASSRLS) roles on first Postgres startup
+├── grant-permissions.js              # Node.js script — grants SELECT/INSERT/UPDATE/DELETE + ALTER DEFAULT PRIVILEGES after migration
+└── migrate-and-grant.sh              # Entrypoint for migrate service: prisma migrate deploy → grant-permissions.js
+nginx/
+└── nginx.conf                        # Reverse proxy: port 80 → api:3075, HTTP/1.1 keep-alives
+Dockerfile                            # Two-stage build: deps (npm ci + prisma generate) → production (non-root platform user)
+.dockerignore                         # Excludes node_modules, .env, test files, generated/ from build context
+.env.example                          # All required environment variables with placeholder values
+docker-compose.yml                    # 12 services: postgres, kafka (KRaft), kafka-init, elasticsearch, redis, seq, migrate, api, outbox-worker, delivery-worker, retry-worker, indexing-worker, nginx
 ```
 
 **Planned layout (all phases):**
@@ -838,12 +852,11 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 12 | Event replay — `POST /api/v1/subscriptions/:id/replay` accepts a `from` ISO 8601 timestamp; reads qualifying events from PostgreSQL under the tenant's RLS context (source of truth, not Kafka offset reset — resetting a partition offset would affect all tenants on that partition); bulk-enqueues one BullMQ replay job per event into the existing `webhook-retry` queue with `{ name: 'replay', data: { eventId, subscriptionId, tenantId, nextAttemptNumber: 1 } }` — piggybacking the retry worker with no new worker needed; `addBulk` skipped when no events match to avoid a BullMQ empty-array error; `ValidationError` (422) on non-parseable `from`; `NotFoundError` (404) when subscription not found or RLS returns null (cross-tenant isolation); `src/services/replayService.js` new; `src/controllers/subscriptionController.js` + `src/routes/subscriptions.js` updated; 8 Vitest tests |
 | 13 | Dead letter management — `GET /api/v1/dead-letters` paginated list with `eventType` and `endpointUrl` included via Prisma `include`; `GET /api/v1/dead-letters/:id` returns full `event` object and `deliveryAttempts` array (all attempt history for the `(eventId, subscriptionId)` pair); `POST /api/v1/dead-letters/:id/retry` delivers synchronously (not via BullMQ — caller sees the result immediately), sets `resolvedAt` only on success, leaves it null on failure so the record remains in the unresolved backlog; each manual retry creates a new `delivery_attempts` row with `attemptNumber = totalAttempts + 1`; `src/controllers/deadLetterController.js` and `src/routes/deadLetters.js` new; `src/services/deadLetterService.js` expanded with `listDeadLetters`, `getDeadLetterById`, `retryDeadLetter`, `toPublicDeadLetter`; 10 Vitest tests |
 | 14 | Rate limiting — event publishing capped at 1,000 events/minute per tenant; subscription creation capped at 10/hour; fixed-window INCR/EXPIRE counter (one round-trip in steady state vs. three for a sliding window); check placed in each controller, not a hook, so the limit is co-located with the operation and trivially testable by mocking Redis; key format `rl:<action>:<tenantId>` isolates counters by action and tenant; `expire` called only when `incr` returns 1 (first request in window) so the window is not reset on every request; `Retry-After` header carries remaining TTL from Redis; `ioredis` singleton with `lazyConnect: true` in `src/db/redis.js`; `src/utils/rateLimit.js` new; `src/controllers/eventController.js` and `src/controllers/subscriptionController.js` updated; 9 Vitest tests (Redis mocked via `vi.mock`) |
+| 16 | Docker Compose — all platform services containerised; `Dockerfile` (two-stage: `deps` runs `npm ci` + `prisma generate`, `production` runs as non-root `platform` user); `docker-compose.yml` with 12 services: `postgres` (16-alpine), `kafka` (apache/kafka:3.9.0 KRaft), `kafka-init` (one-shot topic creation), `elasticsearch` (8.13.0 single-node), `redis` (7-alpine), `seq` (datalust/seq — web UI on host port 5341), `migrate` (runs `prisma migrate deploy` then table grants as superuser), `nginx` (reverse proxy on port 80), plus dedicated containers for `api`, `outbox-worker`, `delivery-worker`, `retry-worker`, and `indexing-worker`; `migrate` completes before any app service starts (`service_completed_successfully`); `kafka-init` completes before `api`, `outbox-worker`, and `delivery-worker`; `docker/postgres/01-init.sh` creates `api_user` (RLS enforced) and `outbox_worker` (BYPASSRLS) roles on first Postgres startup; `docker/grant-permissions.js` grants `SELECT/INSERT/UPDATE/DELETE` + `ALTER DEFAULT PRIVILEGES` on all tables and sequences after migrations run; `nginx/nginx.conf` reverse-proxies port 80 to `api:3075` with HTTP/1.1 keep-alives; Pino → Seq transport added — `src/utils/logger.js` updated to build transport config from four cases (prod+Seq, prod+no-Seq, dev+Seq, dev+no-Seq); `pino-seq` added to dependencies; `.env.example` documents all required variables |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 15 | Health checks (PostgreSQL + Kafka + Elasticsearch + Redis) |
-| 16 | Docker Compose (Kafka KRaft, Elasticsearch, PostgreSQL, Redis, Seq, Nginx) |
 | 17 | GitLab CI/CD |
 | 18 | Git hygiene: branch per feature, MR self-review |
