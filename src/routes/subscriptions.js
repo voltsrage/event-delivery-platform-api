@@ -26,5 +26,18 @@ export async function subscriptionRoutes(fastify){
 
     fastify.delete('/:id',{schema: {params: uuidParam}}, subscriptionController.deleteSubscription);
 
-    fastify.post('/:id/rotate-secret', {schema: {params: uuidParam}}, subscriptionController.rotateSecret)
+    fastify.post('/:id/rotate-secret', {schema: {params: uuidParam}}, subscriptionController.rotateSecret);
+
+    fastify.post('/:id/replay', {
+        schema: {
+            params: uuidParam,
+            body: {
+                type: 'object',
+                required: ['from'],
+                properties: {
+                    from: { type: 'string', minLength: 1 },
+                },
+            },
+        },
+    }, subscriptionController.replaySubscription);
 }

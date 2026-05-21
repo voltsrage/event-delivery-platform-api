@@ -1,6 +1,7 @@
 import { parsePagination } from "../utils/paginate.js";
 import * as subscriptionService from '../services/subscriptionService.js';
 import {ApiResponse} from '../utils/ApiResponse.js';
+import * as replayService from '../services/replayService.js';
 
 export async function createSubscription(req, res){
     const {topicId} = req.params;
@@ -51,4 +52,16 @@ export async function rotateSecret(req, res){
     const sub = await subscriptionService.rotateSecret({tenantId: req.tenantId, subscriptionId: req.params.id});
 
     return res.send(ApiResponse.success(sub));
+}
+
+export async function replaySubscription(req, res)
+{
+    const {from} = req.body;
+    const result = await replayService.replaySubscription({
+        tenantId: req.tenantId,
+        subscriptionId: req.params.id,
+        from
+    });
+
+    return res.send(ApiResponse.success(result));
 }
