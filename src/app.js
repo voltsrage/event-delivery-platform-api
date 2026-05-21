@@ -10,6 +10,7 @@ import { topicRoutes } from './routes/topics.js';
 import { topicSubscriptionRoutes } from './routes/topicSubscriptions.js';
 import { subscriptionRoutes } from './routes/subscriptions.js';
 import {eventRoutes} from './routes/events.js';
+import { deliveryLogRoutes } from './routes/deliveryLogs.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -85,6 +86,8 @@ export async function buildApp()
 
     // Routes are registered here in later phases:
     await app.register(subscriptionRoutes, {prefix: '/api/v1/subscriptions'});
+
+    await app.register(deliveryLogRoutes, {prefix: '/api/v1/delivery-logs'});
 
     await app.register(tenantRoutes, {prefix: '/api/v1/tenants'});
 

@@ -113,7 +113,7 @@ Load active subscriptions for (tenant_id, topic_id)
 
 ## Project Structure
 
-**Current files (Phases 1–10):**
+**Current files (Phases 1–11):**
 
 ```
 prisma/
@@ -137,20 +137,23 @@ src/
 ├── search/
 │   ├── esClient.js                   # @elastic/elasticsearch v8 singleton — connection pool managed internally
 │   ├── deliveryLogsIndex.js          # DELIVERY_LOGS_INDEX constant, field mapping, ensureDeliveryLogsIndex (idempotent)
-│   └── buildDeliveryLogDocument.js   # Shared helper — camelCase inputs → snake_case ES fields; payload serialised to JSON string
+│   ├── buildDeliveryLogDocument.js   # Shared helper — camelCase inputs → snake_case ES fields; payload serialised to JSON string
+│   └── deliveryLogSearch.js          # searchDeliveryLogs + getDeliveryLogById + buildQuery; tenant_id always in filter context
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
 │   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
 │   ├── topics.js                     # POST/GET/DELETE /api/v1/topics (authenticated)
 │   ├── topicSubscriptions.js         # POST/GET /api/v1/topics/:topicId/subscriptions
 │   ├── subscriptions.js              # GET/PUT/DELETE /api/v1/subscriptions/:id + rotate-secret
-│   └── events.js                     # POST /api/v1/topics/:topicId/events (202 Accepted)
+│   ├── events.js                     # POST /api/v1/topics/:topicId/events (202 Accepted)
+│   └── deliveryLogs.js               # GET /api/v1/delivery-logs + GET /api/v1/delivery-logs/:attemptId
 ├── controllers/
 │   ├── tenantController.js
 │   ├── apiController.js
 │   ├── topicController.js
 │   ├── subscriptionController.js
-│   └── eventController.js
+│   ├── eventController.js
+│   └── deliveryLogController.js      # searchDeliveryLogs + getDeliveryLogById — delegates to deliveryLogSearch
 ├── queues/
 │   ├── retryQueue.js                 # BullMQ Queue('webhook-retry') + redisConnection; attempts:1 (retry logic is explicit, not BullMQ-managed)
 │   └── indexQueue.js                 # BullMQ Queue('delivery-log-index'); attempts:5, exponential backoff — idempotent indexing
@@ -189,7 +192,8 @@ src/
 │   ├── delivery.test.js              # Delivery integration tests: HTTP delivery, processEvent fan-out, RLS isolation
 │   ├── retry-schedule.test.js        # Retry schedule unit tests: delay values per attempt, isLastAttempt, MAX_ATTEMPTS
 │   ├── retry-worker.test.js          # Retry worker integration tests: success path, intermediate failure, dead letter, dropped job
-│   └── indexing.test.js              # Indexing tests: buildDeliveryLogDocument shape, processIndexJob ES call, integration fan-out
+│   ├── indexing.test.js              # Indexing tests: buildDeliveryLogDocument shape, processIndexJob ES call, integration fan-out
+│   └── delivery-log-search.test.js   # 20 tests: tenant scoping, optional filters, pagination, GET by ID, validation; ES mocked
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -495,7 +499,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions), and delivery log indexing (`buildDeliveryLogDocument` shape, `processIndexJob` Elasticsearch call and error propagation, and integration fan-out verifying one indexing job per subscription per delivery). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions), delivery log indexing (`buildDeliveryLogDocument` shape, `processIndexJob` Elasticsearch call and error propagation, and integration fan-out verifying one indexing job per subscription per delivery), and delivery log search (tenant scoping — `tenant_id` always in filter context; optional `status`, `topicName`, `from`/`to`, and `q` filters; pagination offset and `totalPages`; GET by ID with cross-tenant isolation; Fastify schema validation). The ES client is mocked in the search tests — no running cluster required. The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running. 62 tests total.
 
 ---
 
@@ -822,12 +826,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 8 | Webhook delivery worker — `src/utils/computeHmac.js` signs `timestamp.payload` with HMAC-SHA256 (timestamp prevents replay attacks; subscribers validate within 5 minutes); `src/delivery/deliver.js` makes the HTTP POST with `AbortController` 10s timeout, HMAC headers, and full response body capture; `src/services/deliveryAttemptService.js` writes `pending` → `success`/`failed` rows via `withTenant` (RLS enforced in the delivery path); `src/workers/delivery.worker.js` Kafka consumer with `autoCommit: false` — offset committed only after all subscriptions for an event are processed (at-least-once guarantee); `isMain` guard prevents Kafka connection on test import; `processEvent` exported for direct Vitest invocation; 5 HMAC unit tests + 8 delivery integration tests |
 | 9 | Retry scheduling + dead letter creation — `src/utils/retrySchedule.js` exports `computeRetryDelay` (30s → 5m → 30m → 2h indexed by failed attempt number), `isLastAttempt`, and `MAX_ATTEMPTS = 5`; `src/queues/retryQueue.js` creates a BullMQ `Queue` named `webhook-retry` with `attempts: 1` (retry logic is managed explicitly — BullMQ-level retries would double-count attempts) and `removeOnComplete/Fail` bounds to cap Redis memory; `src/services/deadLetterService.js` writes `dead_letters` rows; `src/services/deliveryAttemptService.js` gains `deadLetterAttempt` (sets status = `dead_lettered`, clears `nextRetryAt`); `src/workers/delivery.worker.js` failure branch updated — `resolveAttempt` now receives a computed `nextRetryAt` and a BullMQ job is enqueued for attempt 2 with 30s delay; `src/workers/retryWorker.js` BullMQ Worker with `concurrency: 10` — reloads event + subscription from PostgreSQL on each job (picks up endpoint changes between enqueue and processing), delivers, on success resolves, on intermediate failure schedules next attempt with the appropriate backoff delay, on attempt 5 dead-letters the attempt and creates a `dead_letters` row; `isMain` guard prevents Worker construction on test import; `processRetryJob` exported for direct Vitest invocation; 8 retry schedule unit tests + 5 retry worker integration tests |
 | 10 | Elasticsearch setup + async delivery log indexing — `@elastic/elasticsearch` v8 client singleton (`src/search/esClient.js`); `delivery-logs` index with explicit field mapping (`keyword` for IDs/status/topic/endpoint, `text` for payload and response_body, `integer` for http_status/attempt_number, `date` for timestamps) created idempotently on worker startup via `ensureDeliveryLogsIndex` (`src/search/deliveryLogsIndex.js`); `buildDeliveryLogDocument` helper serialises `payload` as a JSON string for full-text search and maps camelCase inputs to snake_case ES fields (`src/search/buildDeliveryLogDocument.js`); `src/queues/indexQueue.js` BullMQ Queue with `attempts: 5` + exponential backoff — indexing is idempotent so BullMQ-managed retries are safe; `src/workers/indexingWorker.js` BullMQ Worker with `concurrency: 20` — uses `attemptId` as the Elasticsearch `_id` turning every index call into an upsert (no duplicate documents on retry); delivery worker and retry worker each enqueue one indexing job after every attempt resolution (success, failure, or dead-lettered); Elasticsearch is not on the delivery critical path — delivery continues unaffected during an ES outage and the indexing queue drains automatically on recovery; `docker-compose.yml` updated with `elasticsearch:8.13.0` service (`discovery.type=single-node`, `xpack.security.enabled=false` for dev, `number_of_replicas: 0` for green single-node health); 9 Vitest tests |
+| 11 | Delivery log search API — `GET /api/v1/delivery-logs` with optional `status`, `topicName`, `from`/`to` date range, and free-text `q` filters; `GET /api/v1/delivery-logs/:attemptId` by Elasticsearch `_id`; `buildQuery` separates hard filters (`filter` context — cached, no score) from full-text search (`must` context — relevance-scored); `{ term: { tenant_id } }` in `filter` on every query (Elasticsearch has no RLS equivalent — tenant isolation is application-enforced); `GET` by ID fetches without a query filter then checks `_source.tenant_id === tenantId` in application code — mismatch returns `404` to avoid confirming a document exists for another tenant; `track_total_hits: true` on every search for accurate `totalPages` beyond the 10,000-document default cap; fixed `Math.min` → `Math.max` in `parsePagination` so page numbers above 1 are honoured; controller extracted to `src/controllers/deliveryLogController.js`; routes in `src/routes/deliveryLogs.js` with Fastify schema validation (`status` enum, `pageSize` max 100); 20 Vitest tests — ES client mocked, real tenant registration and DB teardown |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 11 | Delivery log search API |
 | 12 | Event replay |
 | 13 | Dead letter management |
 | 14 | Rate limiting + tenant subscription quota |
