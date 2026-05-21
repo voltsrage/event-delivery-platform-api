@@ -109,18 +109,18 @@ Load active subscriptions for (tenant_id, topic_id)
 | Event Log | Apache Kafka (KRaft — no ZooKeeper) | 7 |
 | Job Queue | BullMQ (retry scheduling + async Elasticsearch indexing) | 9 — installed |
 | Cache / Rate Limits | Redis (ioredis) | 9 (BullMQ backend) / 14 (rate limits) |
-| Search | Elasticsearch 8 | 10 |
+| Search | Elasticsearch 8 (`@elastic/elasticsearch` v8) | 10 — installed |
 
 ## Project Structure
 
-**Current files (Phases 1–9):**
+**Current files (Phases 1–10):**
 
 ```
 prisma/
 ├── migrations/                       # Database migration history
 └── schema.prisma                     # All 7 Prisma models with RLS-compatible field mapping
 prisma.config.ts                      # Prisma 7.x datasource config — DATABASE_URL lives here, not in schema.prisma
-docker-compose.yml                    # apache/kafka:3.9.0 (KRaft) + kafka-init topic creation service
+docker-compose.yml                    # apache/kafka:3.9.0 (KRaft) + kafka-init + elasticsearch:8.13.0 + redis
 src/
 ├── index.js                          # Server entry point — Fastify startup, PORT from env
 ├── app.js                            # Fastify plugin chain: swagger, error handler, routes
@@ -134,6 +134,10 @@ src/
 │   └── producer.js                   # KafkaJS producer — allowAutoTopicCreation: false, tenantId partition key
 ├── delivery/
 │   └── deliver.js                    # HTTP POST with AbortController 10s timeout + HMAC headers; captures response body
+├── search/
+│   ├── esClient.js                   # @elastic/elasticsearch v8 singleton — connection pool managed internally
+│   ├── deliveryLogsIndex.js          # DELIVERY_LOGS_INDEX constant, field mapping, ensureDeliveryLogsIndex (idempotent)
+│   └── buildDeliveryLogDocument.js   # Shared helper — camelCase inputs → snake_case ES fields; payload serialised to JSON string
 ├── routes/
 │   ├── tenants.js                    # POST /api/v1/tenants (unauthenticated signup)
 │   ├── apiKeys.js                    # POST/GET/DELETE /api/v1/api-keys (authenticated)
@@ -148,7 +152,8 @@ src/
 │   ├── subscriptionController.js
 │   └── eventController.js
 ├── queues/
-│   └── retryQueue.js                 # BullMQ Queue('webhook-retry') + redisConnection; attempts:1 (retry logic is explicit, not BullMQ-managed)
+│   ├── retryQueue.js                 # BullMQ Queue('webhook-retry') + redisConnection; attempts:1 (retry logic is explicit, not BullMQ-managed)
+│   └── indexQueue.js                 # BullMQ Queue('delivery-log-index'); attempts:5, exponential backoff — idempotent indexing
 ├── services/
 │   ├── tenantService.js              # Tenant creation + initial API key in one transaction
 │   ├── apiKeyService.js              # Additional key creation, list, revocation
@@ -159,8 +164,9 @@ src/
 │   └── deadLetterService.js          # createDeadLetter; writes dead_letters row after attempt 5 exhausted
 ├── workers/
 │   ├── outboxWorker.js               # FOR UPDATE SKIP LOCKED poller; exports pollOutbox for testing
-│   ├── delivery.worker.js            # Kafka consumer; autoCommit: false; failure branch enqueues BullMQ retry job; exports processEvent for testing
-│   └── retryWorker.js                # BullMQ Worker('webhook-retry'); reloads event+subscription from DB on each job; exports processRetryJob for testing
+│   ├── delivery.worker.js            # Kafka consumer; autoCommit: false; enqueues indexing job after each delivery; exports processEvent for testing
+│   ├── retryWorker.js                # BullMQ Worker('webhook-retry'); reloads event+subscription from DB; enqueues indexing job after each resolution; exports processRetryJob for testing
+│   └── indexingWorker.js             # BullMQ Worker('delivery-log-index'); uses attemptId as ES _id (idempotent upsert); concurrency:20; exports processIndexJob for testing
 ├── utils/
 │   ├── ApiResponse.js                # Standard { success, statusCode, data, error } envelope
 │   ├── generateApiKey.js             # sk_live_* raw key generation + SHA-256 hash
@@ -182,7 +188,8 @@ src/
 │   ├── hmac.test.js                  # HMAC unit tests: determinism, reference verification, replay protection
 │   ├── delivery.test.js              # Delivery integration tests: HTTP delivery, processEvent fan-out, RLS isolation
 │   ├── retry-schedule.test.js        # Retry schedule unit tests: delay values per attempt, isLastAttempt, MAX_ATTEMPTS
-│   └── retry-worker.test.js          # Retry worker integration tests: success path, intermediate failure, dead letter, dropped job
+│   ├── retry-worker.test.js          # Retry worker integration tests: success path, intermediate failure, dead letter, dropped job
+│   └── indexing.test.js              # Indexing tests: buildDeliveryLogDocument shape, processIndexJob ES call, integration fan-out
 └── seed/
     └── seed.ts                       # Dev seed: two tenants, topics, subscriptions, events
 generated/
@@ -312,15 +319,13 @@ The Kafka offset is committed only after all subscriptions for an event are proc
 
 ### Prerequisites
 
-**Phases 1–9 (current):**
+**Phases 1–10 (current):**
 - Node.js ≥ 20 (Prisma 7.x requires it; Node 18 causes a silent ESM crash in `@prisma/dev` that leaves the generated client stale)
 - PostgreSQL 14+
-- Docker + Docker Compose (for Kafka and Redis)
-- Redis 7+ (BullMQ backend for retry queue)
-
-**Full system (all phases):**
+- Docker + Docker Compose (for Kafka, Redis, and Elasticsearch)
+- Redis 7+ (BullMQ backend for retry queue and indexing queue)
 - Apache Kafka 3.9+ (KRaft mode — no ZooKeeper required, via Docker)
-- Elasticsearch 8+
+- Elasticsearch 8+ (delivery log indexing)
 
 ### Install
 
@@ -427,6 +432,26 @@ REDIS_HOST=localhost
 REDIS_PORT=6379
 ```
 
+### Elasticsearch Setup (Phase 10+)
+
+```bash
+# Start Elasticsearch (defined in docker-compose.yml)
+docker compose up elasticsearch -d
+
+# Wait for green cluster health (~30–60s)
+watch -n5 'curl -sf http://localhost:9200/_cluster/health | jq .status'
+# Expect: "green"
+```
+
+Add to `.env`:
+
+```env
+ELASTICSEARCH_URL=http://localhost:9200
+ELASTICSEARCH_INDEX=delivery-logs
+```
+
+The indexing worker calls `ensureDeliveryLogsIndex` on startup — it creates the `delivery-logs` index with the correct field mapping if it does not exist, and is safe to call multiple times.
+
 ### Run
 
 ```bash
@@ -450,6 +475,10 @@ node src/workers/delivery.worker.js
 
 node src/workers/retryWorker.js
 # Expect: [retry-worker] started — concurrency=10
+
+node src/workers/indexingWorker.js
+# Expect: [es] index "delivery-logs" created  (first run only)
+# Expect: [indexing-worker] running
 ```
 
 The outbox worker is safe to run as multiple instances — `FOR UPDATE SKIP LOCKED` ensures each event is claimed by exactly one worker. In production (Phase 16) all workers become their own Docker Compose services.
@@ -466,7 +495,7 @@ npm test
 npm run test:watch
 ```
 
-Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), and retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
+Integration tests cover tenant registration, API key CRUD, authentication edge cases, RLS isolation, topic and subscription CRUD, event publishing (idempotency, validation, topic existence checks, cross-tenant RLS enforcement, and outbox atomicity), HMAC signing, webhook delivery (HTTP fan-out, delivery attempt recording, and cross-tenant RLS enforcement in the delivery worker), retry scheduling (delay values per attempt number, `isLastAttempt`, `MAX_ATTEMPTS`), retry worker behaviour (success path, intermediate failure with BullMQ re-enqueue, dead letter creation at attempt 5, and dropped jobs for deleted subscriptions), and delivery log indexing (`buildDeliveryLogDocument` shape, `processIndexJob` Elasticsearch call and error propagation, and integration fan-out verifying one indexing job per subscription per delivery). The RLS isolation suite (`rls-isolation.test.js`) requires seed data (`npm run seed`) to be present before running.
 
 ---
 
@@ -792,12 +821,12 @@ Partition key is `tenantId`. All events for the same tenant go to the same parti
 | 7 | Kafka setup — `apache/kafka:3.9.0` in KRaft mode (no ZooKeeper) via Docker Compose on an external `local-services` network; `kafka-init` service creates `platform.events` (6 partitions, 7-day retention) after a 15-second startup wait; `src/kafka/client.js` KafkaJS singleton with comma-split broker array; `src/kafka/producer.js` replaces Phase 6 stub — `allowAutoTopicCreation: false`, `tenantId` partition key, full message envelope; outbox worker connects producer on startup with `SIGTERM` handler for clean shutdown; `vi.mock('../kafka/producer.js')` at the file level in `event.test.js` (file-level hoisting required — `vi.spyOn` does not intercept ESM named imports inside the worker); 4 Vitest unit tests for producer message shape + partition key; 3 Vitest integration tests for outbox atomicity and publish marking |
 | 8 | Webhook delivery worker — `src/utils/computeHmac.js` signs `timestamp.payload` with HMAC-SHA256 (timestamp prevents replay attacks; subscribers validate within 5 minutes); `src/delivery/deliver.js` makes the HTTP POST with `AbortController` 10s timeout, HMAC headers, and full response body capture; `src/services/deliveryAttemptService.js` writes `pending` → `success`/`failed` rows via `withTenant` (RLS enforced in the delivery path); `src/workers/delivery.worker.js` Kafka consumer with `autoCommit: false` — offset committed only after all subscriptions for an event are processed (at-least-once guarantee); `isMain` guard prevents Kafka connection on test import; `processEvent` exported for direct Vitest invocation; 5 HMAC unit tests + 8 delivery integration tests |
 | 9 | Retry scheduling + dead letter creation — `src/utils/retrySchedule.js` exports `computeRetryDelay` (30s → 5m → 30m → 2h indexed by failed attempt number), `isLastAttempt`, and `MAX_ATTEMPTS = 5`; `src/queues/retryQueue.js` creates a BullMQ `Queue` named `webhook-retry` with `attempts: 1` (retry logic is managed explicitly — BullMQ-level retries would double-count attempts) and `removeOnComplete/Fail` bounds to cap Redis memory; `src/services/deadLetterService.js` writes `dead_letters` rows; `src/services/deliveryAttemptService.js` gains `deadLetterAttempt` (sets status = `dead_lettered`, clears `nextRetryAt`); `src/workers/delivery.worker.js` failure branch updated — `resolveAttempt` now receives a computed `nextRetryAt` and a BullMQ job is enqueued for attempt 2 with 30s delay; `src/workers/retryWorker.js` BullMQ Worker with `concurrency: 10` — reloads event + subscription from PostgreSQL on each job (picks up endpoint changes between enqueue and processing), delivers, on success resolves, on intermediate failure schedules next attempt with the appropriate backoff delay, on attempt 5 dead-letters the attempt and creates a `dead_letters` row; `isMain` guard prevents Worker construction on test import; `processRetryJob` exported for direct Vitest invocation; 8 retry schedule unit tests + 5 retry worker integration tests |
+| 10 | Elasticsearch setup + async delivery log indexing — `@elastic/elasticsearch` v8 client singleton (`src/search/esClient.js`); `delivery-logs` index with explicit field mapping (`keyword` for IDs/status/topic/endpoint, `text` for payload and response_body, `integer` for http_status/attempt_number, `date` for timestamps) created idempotently on worker startup via `ensureDeliveryLogsIndex` (`src/search/deliveryLogsIndex.js`); `buildDeliveryLogDocument` helper serialises `payload` as a JSON string for full-text search and maps camelCase inputs to snake_case ES fields (`src/search/buildDeliveryLogDocument.js`); `src/queues/indexQueue.js` BullMQ Queue with `attempts: 5` + exponential backoff — indexing is idempotent so BullMQ-managed retries are safe; `src/workers/indexingWorker.js` BullMQ Worker with `concurrency: 20` — uses `attemptId` as the Elasticsearch `_id` turning every index call into an upsert (no duplicate documents on retry); delivery worker and retry worker each enqueue one indexing job after every attempt resolution (success, failure, or dead-lettered); Elasticsearch is not on the delivery critical path — delivery continues unaffected during an ES outage and the indexing queue drains automatically on recovery; `docker-compose.yml` updated with `elasticsearch:8.13.0` service (`discovery.type=single-node`, `xpack.security.enabled=false` for dev, `number_of_replicas: 0` for green single-node health); 9 Vitest tests |
 
 ## Roadmap
 
 | Phase | Feature |
 |---|---|
-| 10 | Elasticsearch setup + async delivery log indexing (BullMQ) |
 | 11 | Delivery log search API |
 | 12 | Event replay |
 | 13 | Dead letter management |

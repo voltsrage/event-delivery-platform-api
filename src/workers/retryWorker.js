@@ -55,6 +55,26 @@ export async function processRetryJob(job){
             nextRetryAt: null,
         });
 
+        const attemptedAt = new Date();
+        
+        await indexQueue.add('index-delivery-log', {
+            attemptId: attempt.id,
+            document: buildDeliveryLogDocument({
+                tenantId,
+                eventId,
+                subscriptionId,
+                topicName: topic?.name ?? 'unknown',
+                endpoint: subscription.endpointUrl,
+                status: 'success',
+                httpStatus: result.httpStatus,
+                attemptNumber: nextAttemptNumber,
+                payload: event.payload,
+                responseBody: result.responseBody,
+                attemptedAt,
+                nextRetryAt: null
+            })
+        });
+
         return;
     }
 
@@ -69,6 +89,26 @@ export async function processRetryJob(job){
             httpStatus: result.httpStatus,
             responseBody: result.responseBody,
             durationMs: result.durationMs
+        });
+
+        const attemptedAt = new Date();
+        
+        await indexQueue.add('index-delivery-log', {
+            attemptId: attempt.id,
+            document: buildDeliveryLogDocument({
+                tenantId,
+                eventId,
+                subscriptionId,
+                topicName: topic?.name ?? 'unknown',
+                endpoint: subscription.endpointUrl,
+                status: 'dead_lettered',
+                httpStatus: result.httpStatus,
+                attemptNumber: nextAttemptNumber,
+                payload: event.payload,
+                responseBody: result.responseBody,
+                attemptedAt,
+                nextRetryAt: null
+            })
         });
 
         await createDeadLetter({
@@ -94,6 +134,26 @@ export async function processRetryJob(job){
         responseBody: result.responseBody,
         durationMs: result.durationMs,
         nextRetryAt
+    });
+
+    const attemptedAt = new Date();
+        
+    await indexQueue.add('index-delivery-log', {
+        attemptId: attempt.id,
+        document: buildDeliveryLogDocument({
+            tenantId,
+            eventId,
+            subscriptionId,
+            topicName: topic?.name ?? 'unknown',
+            endpoint: subscription.endpointUrl,
+            status: 'failed',
+            httpStatus: result.httpStatus,
+            attemptNumber: nextAttemptNumber,
+            payload: event.payload,
+            responseBody: result.responseBody,
+            attemptedAt,
+            nextRetryAt
+        })
     });
 
     await retryQueue.add(

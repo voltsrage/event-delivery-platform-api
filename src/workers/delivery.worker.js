@@ -6,6 +6,8 @@ import { createPendingAttempt, resolveAttempt,deadLetterAttempt } from '../servi
 import {retryQueue} from '../queues/retryQueue.js';
 import { computeRetryDelay, isLastAttempt } from '../utils/retrySchedule.js';
 import {createDeadLetter} from '../services/deadLetterService.js';
+import { indexQueue } from '../queues/indexQueue.js';
+import { buildDeliveryLogDocument } from '../search/buildDeliveryLogDocument.js';
 
 const CONSUMER_GROUP = 'webhook-delivery-worker';
 const consumer = kafka.consumer({groupId: CONSUMER_GROUP});
@@ -56,6 +58,26 @@ export async function processEvent(event){
                 durationMs: result.durationMs,
                 nextRetryAt: null, // Phase 9 computes the backoff schedule here.
             });
+
+            const attemptedAt = new Date();
+
+            await indexQueue.add('index-delivery-log', {
+                attemptId: attempt.id,
+                document: buildDeliveryLogDocument({
+                    tenantId,
+                    eventId,
+                    subscriptionId: sub.id,
+                    topicName,
+                    endpoint: sub.endpointUrl,
+                    status: 'success',
+                    httpStatus: result.httpStatus,
+                    attemptNumber: 1,
+                    payload,
+                    responseBody: result.responseBody,
+                    attemptedAt,
+                    nextRetryAt: null
+                })
+            });
         }
         else{
             const delay = computeRetryDelay(1);
@@ -69,6 +91,26 @@ export async function processEvent(event){
                 responseBody: result.responseBody,
                 durationMs: result.durationMs,
                 nextRetryAt
+            });
+
+            const attemptedAt = new Date();
+
+            await indexQueue.add('index-delivery-log', {
+                attemptId: attempt.id,
+                document: buildDeliveryLogDocument({
+                    tenantId,
+                    eventId,
+                    subscriptionId: sub.id,
+                    topicName,
+                    endpoint: sub.endpointUrl,
+                    status: 'failed',
+                    httpStatus: result.httpStatus,
+                    attemptNumber: 1,
+                    payload,
+                    responseBody: result.responseBody,
+                    attemptedAt,
+                    nextRetryAt
+                })
             });
 
             if(delay !== null){
