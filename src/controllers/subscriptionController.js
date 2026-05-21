@@ -2,8 +2,11 @@ import { parsePagination } from "../utils/paginate.js";
 import * as subscriptionService from '../services/subscriptionService.js';
 import {ApiResponse} from '../utils/ApiResponse.js';
 import * as replayService from '../services/replayService.js';
+import { checkRateLimit } from "../utils/rateLimit.js";
 
 export async function createSubscription(req, res){
+    await checkRateLimit(req.tenantId, 'subscriptions:create');
+    
     const {topicId} = req.params;
     const {endpoint} = req.body;
 
