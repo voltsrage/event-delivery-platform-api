@@ -11,6 +11,7 @@ import { topicSubscriptionRoutes } from './routes/topicSubscriptions.js';
 import { subscriptionRoutes } from './routes/subscriptions.js';
 import {eventRoutes} from './routes/events.js';
 import { deliveryLogRoutes } from './routes/deliveryLogs.js';
+import { deadLetterRoutes } from './routes/deadLetters.js';
 
 const isDev = process.env.NODE_ENV != 'production';
 
@@ -97,7 +98,9 @@ export async function buildApp()
 
     await app.register(apiKeyRoutes, {prefix: '/api/v1/api-keys'});
 
-    await app.register(eventRoutes, {prefix: '/api/v1/topics/:topicId/events'})
+    await app.register(eventRoutes, {prefix: '/api/v1/topics/:topicId/events'});
+
+    await app.register(deadLetterRoutes, {prefix: '/api/v1/dead-letters'})
 
     return app;
 }
